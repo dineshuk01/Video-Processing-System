@@ -1,0 +1,45 @@
+{
+  "name": "video-processing-system",
+  "version": "1.0.0",
+  "description": "Scalable Video Processing & HLS Streaming System",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "nodemon --watch src -e ts --exec ts-node src/index.ts",
+    "dev:worker": "nodemon --watch src -e ts --exec ts-node src/worker.ts",
+    "verify": "ts-node src/scripts/verify-setup.ts"
+  },
+  "keywords": [
+    "video",
+    "processing",
+    "hls",
+    "ffmpeg",
+    "aws",
+    "s3",
+    "sqs"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-ecs": "^3.1101.0",
+    "@aws-sdk/client-s3": "^3.621.0",
+    "@aws-sdk/client-sqs": "^3.621.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/fluent-ffmpeg": "^2.1.24",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.14.12",
+    "nodemon": "^3.1.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}
