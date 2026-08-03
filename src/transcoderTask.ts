@@ -294,6 +294,7 @@ async function executeTranscoding() {
       }
     }
 
+
     await dbService.updateVideo(videoId, {
       status: VideoStatus.COMPLETED,
       progress: 100,

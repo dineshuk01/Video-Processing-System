@@ -154,6 +154,22 @@ export class DbService {
       limit,
     };
   }
+
+  async deleteVideo(id: string): Promise<boolean> {
+    return await this.mutex.run(async () => {
+      const records = await this.readAll();
+      const initialLength = records.length;
+      const filtered = records.filter((v) => v.id !== id);
+
+      if (filtered.length === initialLength) {
+        return false; // Record not found
+      }
+
+      await this.writeAll(filtered);
+      Logger.info(`Deleted database record for video: ${id}`);
+      return true;
+    });
+  }
 }
 
 // Export singleton instance

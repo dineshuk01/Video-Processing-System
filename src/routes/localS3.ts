@@ -123,4 +123,58 @@ router.put(
   }
 );
 
+// GET /api/local-s3/:bucket/* — Serve simulated S3 files (HLS playlists, video segments, raw files)
+router.get(
+  '/:bucket/*',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (process.env.PROVIDER !== 'local') {
+        return ResponseHandler.error(
+          res,
+          'Mock S3 endpoint is only available when PROVIDER=local',
+          403
+        );
+      }
+
+      const bucket = req.params.bucket;
+      const key = req.params[0];
+
+      if (!bucket || !key) {
+        return ResponseHandler.error(res, 'Missing bucket or object key', 400);
+      }
+
+      const dataDir = path.resolve(process.env.LOCAL_DATA_DIR || './data');
+      const filePath = path.join(dataDir, bucket, key);
+
+      // Prevent directory traversal
+      const relativePath = path.relative(path.join(dataDir, bucket), filePath);
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        return ResponseHandler.error(res, 'Directory traversal detected', 400);
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return ResponseHandler.error(res, `Object ${key} not found in bucket ${bucket}`, 404);
+      }
+
+      // Determine Content-Type
+      const ext = path.extname(filePath).toLowerCase();
+      let contentType = 'application/octet-stream';
+      if (ext === '.m3u8') contentType = 'application/x-mpegURL';
+      else if (ext === '.ts') contentType = 'video/MP2T';
+      else if (ext === '.mp4') contentType = 'video/mp4';
+      else if (ext === '.mkv') contentType = 'video/x-matroska';
+      else if (ext === '.mov') contentType = 'video/quicktime';
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+
+      const stream = fs.createReadStream(filePath);
+      stream.pipe(res);
+    } catch (err: any) {
+      next(err);
+    }
+  }
+);
+
 export default router;
