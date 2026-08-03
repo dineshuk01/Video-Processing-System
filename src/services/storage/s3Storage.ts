@@ -10,6 +10,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Readable } from 'stream';
+import { Logger } from '../../utils/logger';
 
 export class S3Storage implements StorageService {
   private client: S3Client;
@@ -77,6 +78,11 @@ export class S3Storage implements StorageService {
 
   async deleteObject(bucket: string, key: string): Promise<void> {
     await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  }
+
+  async deleteDirectory(bucket: string, prefix: string): Promise<void> {
+    Logger.warn(`S3 deleteDirectory not fully implemented. Stub called for bucket: ${bucket}, prefix: ${prefix}`);
+    // A real implementation would list objects by prefix and delete them in batches
   }
 
   async getObjectMetadata(bucket: string, key: string): Promise<{ size: number; contentType?: string }> {

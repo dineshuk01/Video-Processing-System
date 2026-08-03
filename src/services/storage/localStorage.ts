@@ -73,6 +73,18 @@ export class LocalStorage implements StorageService {
     }
   }
 
+  async deleteDirectory(bucket: string, prefix: string): Promise<void> {
+    const bucketPath = this.getBucketPath(bucket);
+    const dirPath = path.join(bucketPath, prefix);
+    try {
+      await fs.promises.rm(dirPath, { recursive: true, force: true });
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') {
+        throw err;
+      }
+    }
+  }
+
   async getObjectMetadata(bucket: string, key: string): Promise<{ size: number; contentType?: string }> {
     const bucketPath = this.getBucketPath(bucket);
     const filePath = path.join(bucketPath, key);

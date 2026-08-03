@@ -4,6 +4,7 @@ export interface StorageService {
   downloadFile(bucket: string, key: string, destPath: string): Promise<void>;
   fileExists(bucket: string, key: string): Promise<boolean>;
   deleteObject(bucket: string, key: string): Promise<void>;
+  deleteDirectory(bucket: string, prefix: string): Promise<void>;
   getObjectMetadata(bucket: string, key: string): Promise<{ size: number; contentType?: string }>;
 }
 

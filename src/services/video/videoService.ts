@@ -6,16 +6,14 @@ import { getQueueService } from '../queue/queueService';
 import { Logger } from '../../utils/logger';
 
 export class VideoService {
-  private allowedMimeTypes: string[];
-  private maxFileSizeMb: number;
-
-  constructor() {
-    this.allowedMimeTypes = (
-      process.env.ALLOWED_MIME_TYPES || 'video/mp4,video/quicktime,video/x-matroska'
-    )
+  private get allowedMimeTypes(): string[] {
+    return (process.env.ALLOWED_MIME_TYPES || 'video/mp4,video/quicktime,video/x-matroska')
       .split(',')
       .map((m) => m.trim().toLowerCase());
-    this.maxFileSizeMb = parseInt(process.env.MAX_UPLOAD_SIZE_MB || '100', 10);
+  }
+
+  private get maxFileSizeMb(): number {
+    return parseInt(process.env.MAX_UPLOAD_SIZE_MB || '1000', 10);
   }
 
   private sanitizeFilename(filename: string): string {
@@ -40,10 +38,11 @@ export class VideoService {
       );
     }
 
-    const maxBytes = this.maxFileSizeMb * 1024 * 1024;
+    const maxFileSizeMb = this.maxFileSizeMb;
+    const maxBytes = maxFileSizeMb * 1024 * 1024;
     if (params.fileSize > maxBytes) {
       throw new Error(
-        `File size (${(params.fileSize / (1024 * 1024)).toFixed(2)}MB) exceeds limit of ${this.maxFileSizeMb}MB`
+        `File size (${(params.fileSize / (1024 * 1024)).toFixed(2)}MB) exceeds limit of ${maxFileSizeMb}MB`
       );
     }
 
@@ -145,6 +144,40 @@ export class VideoService {
 
   async getVideo(id: string) {
     return dbService.getVideo(id);
+  }
+
+  async deleteVideo(id: string): Promise<void> {
+    const video = await dbService.getVideo(id);
+    if (!video) {
+      throw new Error(`Video with ID ${id} not found`);
+    }
+
+    const storage = getStorageService();
+    const tempBucket = process.env.PROVIDER === 'aws' ? process.env.AWS_S3_TEMP_BUCKET! : process.env.LOCAL_S3_TEMP_BUCKET!;
+    const publicBucket = process.env.PROVIDER === 'aws' ? process.env.AWS_S3_PUBLIC_BUCKET! : process.env.LOCAL_S3_PUBLIC_BUCKET!;
+
+    // 1. Delete raw input file if exists
+    if (video.rawObjectKey) {
+      try {
+        await storage.deleteObject(tempBucket, video.rawObjectKey);
+        // Also remove the containing directory locally
+        await storage.deleteDirectory(tempBucket, `raw/${id}`);
+      } catch (err: any) {
+        Logger.warn(`Failed to delete raw object ${video.rawObjectKey} for video ${id}`, err.message);
+      }
+    }
+
+    // 2. Delete processed HLS directory
+    try {
+      const outputKeyPrefix = `processed/${id}`;
+      await storage.deleteDirectory(publicBucket, outputKeyPrefix);
+    } catch (err: any) {
+      Logger.warn(`Failed to delete processed directory for video ${id}`, err.message);
+    }
+
+    // 3. Delete from DB
+    await dbService.deleteVideo(id);
+    Logger.info(`Successfully deleted video ${id} and all associated resources`);
   }
 }
 
