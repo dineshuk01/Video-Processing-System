@@ -6,6 +6,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { Server } from 'http';
+import swaggerUi from 'swagger-ui-express';
+import * as swaggerDocument from './docs/swagger.json';
 import { Logger } from './utils/logger';
 import { ResponseHandler } from './utils/responseHandler';
 import * as path from 'path';
@@ -147,6 +149,10 @@ app.get('/health/detailed', async (req: express.Request, res: express.Response) 
 
 // Serve static frontend from public/ directory
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// Register API Documentation route
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+Logger.info('API Documentation mounted at /api/docs');
 
 // Register routes
 app.use('/api/upload/initiate', uploadLimiter); // Apply strict upload rate limiter
