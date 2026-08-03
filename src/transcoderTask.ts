@@ -32,19 +32,23 @@ if (!videoId || !inputBucket || !inputKey || !outputBucket || !outputKeyPrefix) 
 // Determine FFmpeg/FFprobe binary paths
 let ffmpegBin = 'ffmpeg';
 let ffprobeBin = 'ffprobe';
+
 try {
   const staticFfmpegPath = require('ffmpeg-static');
   if (staticFfmpegPath) {
     ffmpegBin = staticFfmpegPath;
-    // ffprobe is co-located with ffmpeg in ffmpeg-static
-    ffprobeBin = staticFfmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
-    // If ffprobe doesn't exist next to ffmpeg, fall back to global
-    if (!fs.existsSync(ffprobeBin)) {
-      ffprobeBin = 'ffprobe';
-    }
   }
 } catch (err) {
-  Logger.info('FFmpeg Static not resolved, falling back to global ffmpeg/ffprobe');
+  Logger.info('FFmpeg Static not resolved, falling back to global ffmpeg');
+}
+
+try {
+  const staticFfprobePath = require('ffprobe-static');
+  if (staticFfprobePath && staticFfprobePath.path) {
+    ffprobeBin = staticFfprobePath.path;
+  }
+} catch (err) {
+  Logger.info('FFprobe Static not resolved, falling back to global ffprobe');
 }
 
 // ─── HLS Resolution Ladder ────────────────────────────────────
@@ -69,6 +73,10 @@ function runFfmpeg(args: string[]): Promise<void> {
     Logger.info(`FFmpeg: Executing command -> ${ffmpegBin} ${args.join(' ')}`);
     const proc = spawn(ffmpegBin, args);
     let stderr = '';
+
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to start FFmpeg: ${err.message}`));
+    });
 
     proc.stderr.on('data', (data) => {
       stderr += data.toString();
@@ -100,6 +108,10 @@ function probeVideo(filePath: string): Promise<VideoMetadata> {
     const proc = spawn(ffprobeBin, args);
     let stdout = '';
     let stderr = '';
+
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to start FFprobe: ${err.message}`));
+    });
 
     proc.stdout.on('data', (data) => { stdout += data.toString(); });
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
