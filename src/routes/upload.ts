@@ -70,4 +70,39 @@ router.get(
   }
 );
 
+// 4. GET /api/videos/:id — fetch a single video record
+router.get(
+  '/:id',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const video = await videoService.getVideo(id);
+      if (!video) {
+        return ResponseHandler.error(res, `Video with ID ${id} not found`, 404, 'NOT_FOUND');
+      }
+      return ResponseHandler.success(res, video, 200);
+    } catch (err: any) {
+      next(err);
+    }
+  }
+);
+
+// 5. DELETE /api/videos/:id — delete a video and its resources
+router.delete(
+  '/:id',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      await videoService.deleteVideo(id);
+      return ResponseHandler.success(res, { message: 'Video deleted successfully' }, 200);
+    } catch (err: any) {
+      if (err.message.includes('not found')) {
+        return ResponseHandler.error(res, err.message, 404, 'NOT_FOUND');
+      }
+      next(err);
+    }
+  }
+);
+
 export default router;
+

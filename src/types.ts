@@ -13,6 +13,7 @@ export interface VideoRecord {
   status: VideoStatus;
   rawObjectKey?: string;
   hlsPlaylistUrl?: string;
+  thumbnailUrl?: string;
   error?: string;
   progress: number; // 0 to 100
   fileSize: number; // in bytes

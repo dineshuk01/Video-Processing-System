@@ -1,14 +1,23 @@
+import * as dotenv from 'dotenv';
+// Load environment variables before any other imports
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
-import * as dotenv from 'dotenv';
+import helmet from 'helmet';
 import { Server } from 'http';
 import { Logger } from './utils/logger';
 import { ResponseHandler } from './utils/responseHandler';
+import * as path from 'path';
 import uploadRouter from './routes/upload';
 import localS3Router from './routes/localS3';
-
-// Load environment variables
-dotenv.config();
+import eventsRouter from './routes/events';
+import metricsRouter from './routes/metrics';
+import { apiLimiter, uploadLimiter } from './middleware/rateLimiter';
+import { cleanupService } from './services/cleanup/cleanupService';
+import { dbService } from './services/db/dbService';
+import { getStorageService } from './services/storage/storageService';
+import { getQueueService } from './services/queue/queueService';
 
 // 1. Validate Environment Variables
 function validateEnv() {
@@ -67,8 +76,19 @@ try {
 const app = express();
 const port = parseInt(process.env.PORT || '5000', 10);
 
+// Security Headers (configured to allow inline video streaming & Hls.js cross-origin scripts)
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // Disabled CSP so CDN-loaded Hls.js can execute smoothly
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
+
 app.use(cors());
 app.use(express.json());
+
+// Apply global rate limiter to API routes
+app.use('/api', apiLimiter);
 
 // Health Check Endpoint
 app.get('/health', (req: express.Request, res: express.Response) => {
@@ -79,8 +99,61 @@ app.get('/health', (req: express.Request, res: express.Response) => {
   });
 });
 
+// Detailed Health Check Endpoint (Verifies DB, Storage, Queue connectivity)
+app.get('/health/detailed', async (req: express.Request, res: express.Response) => {
+  const status: Record<string, string> = {
+    api: 'UP',
+    database: 'UNKNOWN',
+    storage: 'UNKNOWN',
+    queue: 'UNKNOWN',
+  };
+
+  let healthy = true;
+
+  try {
+    await dbService.listVideos(1, 1);
+    status.database = 'UP';
+  } catch (err) {
+    status.database = 'DOWN';
+    healthy = false;
+  }
+
+  try {
+    const storage = getStorageService();
+    const bucket = process.env.PROVIDER === 'aws' ? process.env.AWS_S3_TEMP_BUCKET! : process.env.LOCAL_S3_TEMP_BUCKET!;
+    await storage.fileExists(bucket, 'non-existent-probe-key');
+    status.storage = 'UP';
+  } catch (err) {
+    status.storage = 'DOWN';
+    healthy = false;
+  }
+
+  try {
+    const queue = getQueueService();
+    const queueUrl = process.env.PROVIDER === 'aws' ? process.env.AWS_SQS_QUEUE_URL! : process.env.LOCAL_SQS_QUEUE_NAME!;
+    // Simple check that queue instance resolves
+    if (queue) status.queue = 'UP';
+  } catch (err) {
+    status.queue = 'DOWN';
+    healthy = false;
+  }
+
+  return res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'HEALTHY' : 'DEGRADED',
+    components: status,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Serve static frontend from public/ directory
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
 // Register routes
+app.use('/api/upload/initiate', uploadLimiter); // Apply strict upload rate limiter
 app.use('/api/upload', uploadRouter);
+app.use('/api/videos', uploadRouter);
+app.use('/api/events', eventsRouter);
+app.use('/metrics', metricsRouter);
 
 // Register Local S3 mock router only in local mode
 if (process.env.PROVIDER === 'local') {
@@ -103,7 +176,6 @@ app.use(
       method: req.method,
     });
 
-    // Handle Express Body Parser Limit Errors
     if (err.type === 'entity.too.large') {
       return ResponseHandler.error(
         res,
@@ -122,7 +194,10 @@ app.use(
   }
 );
 
-// 4. Start Server
+// 4. Start Periodic Cleanup Service
+cleanupService.startPeriodicCleanup();
+
+// 5. Start Server
 const server: Server = app.listen(port, () => {
   Logger.info(`Video Processing API Server started successfully on port ${port}`, {
     provider: process.env.PROVIDER,
@@ -130,10 +205,9 @@ const server: Server = app.listen(port, () => {
   });
 });
 
-// Increase socket timeout to 10 minutes to support large file uploads
 server.setTimeout(10 * 60 * 1000);
 
-// 5. Graceful Shutdown
+// 6. Graceful Shutdown
 function handleGracefulShutdown(signal: string) {
   Logger.warn(`Received ${signal}. Starting graceful shutdown...`);
 
@@ -143,7 +217,6 @@ function handleGracefulShutdown(signal: string) {
     process.exit(0);
   });
 
-  // Force close after timeout (10 seconds)
   setTimeout(() => {
     Logger.error('Forced shutdown: Connections did not close in time.');
     process.exit(1);

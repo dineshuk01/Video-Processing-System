@@ -158,7 +158,33 @@ async function executeTranscoding() {
     ]);
     await dbService.updateVideo(videoId, { progress: 90 });
 
-    // Step D: Write Master manifest (progress 93%)
+    // Step D: Extract Thumbnail Poster Frame (progress 91%)
+    Logger.info(`Transcoder Task: Extracting poster frame thumbnail for video ${videoId}...`);
+    const posterPath = path.join(outputDir, 'poster.jpg');
+    try {
+      await runFfmpeg([
+        '-y',
+        '-ss', '00:00:02',
+        '-i', inputFilePath,
+        '-vframes', '1',
+        '-q:v', '2',
+        posterPath,
+      ]);
+    } catch (posterErr: any) {
+      Logger.warn('Poster frame extraction at 2s failed, falling back to 0s frame', posterErr.message);
+      try {
+        await runFfmpeg([
+          '-y',
+          '-i', inputFilePath,
+          '-vframes', '1',
+          '-q:v', '2',
+          posterPath,
+        ]);
+      } catch {}
+    }
+    await dbService.updateVideo(videoId, { progress: 91 });
+
+    // Step E: Write Master manifest (progress 93%)
     Logger.info(`Transcoder Task: Writing master HLS playlist manifest...`);
     const masterPlaylistContent = `#EXTM3U
 #EXT-X-VERSION:3
@@ -175,8 +201,8 @@ playlist_1080p.m3u8
     await fs.promises.writeFile(masterPlaylistPath, masterPlaylistContent, 'utf8');
     await dbService.updateVideo(videoId, { progress: 93 });
 
-    // Step E: Upload Playlist Directory (progress 97%)
-    Logger.info(`Transcoder Task: Uploading generated HLS files to ${outputBucket}/${outputKeyPrefix}`);
+    // Step F: Upload Playlist Directory & Poster (progress 97%)
+    Logger.info(`Transcoder Task: Uploading generated HLS files & poster to ${outputBucket}/${outputKeyPrefix}`);
     const files = await fs.promises.readdir(outputDir);
     
     for (const file of files) {
@@ -186,7 +212,7 @@ playlist_1080p.m3u8
     }
     await dbService.updateVideo(videoId, { progress: 97 });
 
-    // Step F: Cleanup Local Temp directories & set COMPLETED
+    // Step G: Cleanup Local Temp directories & set COMPLETED
     Logger.info('Transcoder Task: Cleaning up local temporary transcode files...');
     if (fs.existsSync(tempDir)) {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -198,10 +224,17 @@ playlist_1080p.m3u8
         ? `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/master.m3u8`
         : `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/master.m3u8`;
 
+    const thumbnailUrl = fs.existsSync(posterPath) || files.includes('poster.jpg')
+      ? (process.env.PROVIDER === 'aws'
+          ? `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/poster.jpg`
+          : `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/poster.jpg`)
+      : undefined;
+
     await dbService.updateVideo(videoId, {
       status: VideoStatus.COMPLETED,
       progress: 100,
       hlsPlaylistUrl,
+      thumbnailUrl,
     });
     Logger.info(`Transcoder Task: Video ${videoId} successfully transcoded and uploaded!`);
   } catch (err: any) {

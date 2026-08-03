@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VideoFlow — Player</title>
+  <meta name="description" content="Adaptive HLS video player with quality switching." />
+  <link rel="stylesheet" href="app.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>▶️</text></svg>" />
+  <!-- Hls.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header class="header">
+    <a class="header-brand" href="/">
+      <div class="logo-icon">🎬</div>
+      VideoFlow
+    </a>
+    <a class="back-link" href="/">← Back to Dashboard</a>
+  </header>
+
+  <!-- ── Player Layout ── -->
+  <div id="player-root" style="padding:2rem 0;">
+    <div class="container">
+      <div class="spinner" id="loader"></div>
+      <div id="player-error" class="hidden" style="text-align:center;color:#ef4444;padding:3rem;">
+        <div style="font-size:2.5rem;margin-bottom:1rem;">⚠️</div>
+        <p id="error-message">Video not found or not yet ready.</p>
+        <a href="/" class="btn btn-primary mt-2">Back to Dashboard</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (async () => {
+    const params = new URLSearchParams(location.search);
+    const videoId = params.get('id');
+    const loader  = document.getElementById('loader');
+    const errBox  = document.getElementById('player-error');
+    const errMsg  = document.getElementById('error-message');
+
+    if (!videoId) {
+      loader.classList.add('hidden');
+      errMsg.textContent = 'No video ID provided in the URL.';
+      errBox.classList.remove('hidden');
+      return;
+    }
+
+    // ── 1. Fetch video record ────────────────────────────────
+    let video;
+    try {
+      const res  = await fetch(`/api/upload/${videoId}`);
+      const json = await res.json();
+      if (!json.success || !json.data) throw new Error(json.error?.message || 'Not found');
+      video = json.data;
+    } catch (err) {
+      loader.classList.add('hidden');
+      errMsg.textContent = `Failed to load video: ${err.message}`;
+      errBox.classList.remove('hidden');
+      return;
+    }
+
+    if (video.status !== 'COMPLETED' || !video.hlsPlaylistUrl) {
+      loader.classList.add('hidden');
+      errMsg.textContent = `This video is not ready yet. Current status: ${video.status}`;
+      errBox.classList.remove('hidden');
+      return;
+    }
+
+    // ── 2. Build Player UI ───────────────────────────────────
+    loader.classList.add('hidden');
+    document.title = `VideoFlow — ${video.originalName}`;
+
+    const playerRoot = document.getElementById('player-root');
+    playerRoot.innerHTML = `
+      <div class="player-layout">
+        <!-- Video -->
+        <div>
+          <div class="video-wrap">
+            <video id="hls-video" controls autoplay playsinline
+              style="background:#000; min-height: 240px; width: 100%;"
+              poster="${video.thumbnailUrl || ''}"
+            ></video>
+          </div>
+
+          <!-- Controls -->
+          <div style="margin-top:1rem;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;">
+            <!-- Quality selector -->
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+              <label style="font-size:0.8rem;color:var(--text-secondary);white-space:nowrap;">Quality:</label>
+              <select class="quality-selector" id="quality-select">
+                <option value="-1">Auto (Adaptive)</option>
+              </select>
+            </div>
+            <!-- Speed selector -->
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+              <label style="font-size:0.8rem;color:var(--text-secondary);white-space:nowrap;">Speed:</label>
+              <select class="quality-selector" id="speed-select" style="min-width:80px;">
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2.0x</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="player-sidebar">
+          <a class="back-link" href="/">← All Videos</a>
+
+          <div class="info-card">
+            <h3>Video Info</h3>
+            <div class="info-row">
+              <span class="info-label">File</span>
+              <span class="info-value" style="text-align:right;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${video.originalName}">${video.originalName}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Size</span>
+              <span class="info-value">${formatBytes(video.fileSize)}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Type</span>
+              <span class="info-value">${video.contentType}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Status</span>
+              <span class="info-value" style="color: var(--green)">✅ Completed</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Completed</span>
+              <span class="info-value">${formatDate(video.completedAt)}</span>
+            </div>
+          </div>
+
+          <div class="info-card">
+            <h3>Adaptive Streams</h3>
+            <div class="info-row"><span class="info-label">360p</span><span class="info-value">400 kbps</span></div>
+            <div class="info-row"><span class="info-label">480p</span><span class="info-value">800 kbps</span></div>
+            <div class="info-row"><span class="info-label">720p</span><span class="info-value">2,500 kbps</span></div>
+            <div class="info-row"><span class="info-label">1080p</span><span class="info-value">4,500 kbps</span></div>
+          </div>
+
+          <div class="info-card" style="word-break:break-all;">
+            <h3>Playlist URL</h3>
+            <code id="playlist-url" style="font-size:0.7rem;color:var(--text-secondary);display:block;margin-bottom:0.5rem;">${video.hlsPlaylistUrl}</code>
+            <button class="btn btn-watch" style="width:100%;text-align:center;justify-content:center;" onclick="navigator.clipboard.writeText('${video.hlsPlaylistUrl}')">📋 Copy Link</button>
+          </div>
+        </div>
+      </div>`;
+
+    // ── 3. Initialize Hls.js ─────────────────────────────────
+    const videoEl    = document.getElementById('hls-video');
+    const qualitySel = document.getElementById('quality-select');
+    const speedSel   = document.getElementById('speed-select');
+    const m3u8Url    = video.hlsPlaylistUrl;
+
+    // Speed Control
+    speedSel.addEventListener('change', () => {
+      videoEl.playbackRate = parseFloat(speedSel.value);
+    });
+
+    // Keyboard Shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'INPUT') return;
+      
+      switch(e.key.toLowerCase()) {
+        case ' ':
+        case 'k':
+          e.preventDefault();
+          videoEl.paused ? videoEl.play() : videoEl.pause();
+          break;
+        case 'f':
+          e.preventDefault();
+          if (document.fullscreenElement) {
+            document.exitFullscreen();
+          } else {
+            videoEl.requestFullscreen();
+          }
+          break;
+        case 'm':
+          e.preventDefault();
+          videoEl.muted = !videoEl.muted;
+          break;
+        case 'arrowright':
+          e.preventDefault();
+          videoEl.currentTime += 5;
+          break;
+        case 'arrowleft':
+          e.preventDefault();
+          videoEl.currentTime -= 5;
+          break;
+        case 'arrowup':
+          e.preventDefault();
+          videoEl.volume = Math.min(1, videoEl.volume + 0.1);
+          break;
+        case 'arrowdown':
+          e.preventDefault();
+          videoEl.volume = Math.max(0, videoEl.volume - 0.1);
+          break;
+      }
+    });
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+      });
+
+      hls.loadSource(m3u8Url);
+      hls.attachMedia(videoEl);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+        // Populate quality dropdown
+        data.levels.forEach((level, idx) => {
+          const option = document.createElement('option');
+          option.value = idx;
+          option.textContent = `${level.height}p — ${Math.round(level.bitrate / 1000)} kbps`;
+          qualitySel.appendChild(option);
+        });
+      });
+
+      qualitySel.addEventListener('change', () => {
+        hls.currentLevel = parseInt(qualitySel.value, 10);
+      });
+
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        if (data.fatal) {
+          console.error('Hls.js fatal error:', data);
+        }
+      });
+    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari native HLS
+      videoEl.src = m3u8Url;
+      qualitySel.parentElement.style.display = 'none'; // quality switching not available natively
+    } else {
+      videoEl.insertAdjacentHTML('afterend',
+        '<p style="color:var(--red);font-size:0.85rem;margin-top:0.5rem;">⚠ HLS is not supported in this browser.</p>'
+      );
+    }
+  })();
+
+  // ── Helpers (inlined for player page) ──────────────────────
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+  }
+  function formatDate(iso) {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleString(undefined, {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  }
+  </script>
+</body>
+</html>
