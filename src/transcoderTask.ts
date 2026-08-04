@@ -290,14 +290,21 @@ Enjoy smooth resolution switching and clear captions!
 `;
     const subtitlePath = path.join(outputDir, subtitleFileName);
     await fs.promises.writeFile(subtitlePath, subtitleContent, 'utf8');
+
+    // Write subtitle HLS playlist (Hls.js requires subtitle tracks as .m3u8, not raw .vtt)
+    const subtitlePlaylistName = 'subs_en.m3u8';
+    const videoDuration = metadata.duration || 10;
+    const subtitlePlaylistContent = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(videoDuration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${videoDuration.toFixed(6)},\n${subtitleFileName}\n#EXT-X-ENDLIST\n`;
+    await fs.promises.writeFile(path.join(outputDir, subtitlePlaylistName), subtitlePlaylistContent, 'utf8');
+
     await dbService.updateVideo(videoId, { progress: 86 });
 
     // Step F: Write Master manifest (progress 91%)
     Logger.info(`Transcoder Task: Writing master HLS playlist manifest...`);
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
     
-    // Add subtitles declaration
-    masterPlaylistContent += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="en",URI="${subtitleFileName}"\n`;
+    // Add subtitles declaration (point to subtitle playlist, not raw .vtt)
+    masterPlaylistContent += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="en",URI="${subtitlePlaylistName}"\n`;
     
     for (const variant of eligibleVariants) {
       masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height},SUBTITLES="subs"\n`;

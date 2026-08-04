@@ -290,7 +290,21 @@
 
       hls.on(Hls.Events.ERROR, (event, data) => {
         if (data.fatal) {
-          console.error('Hls.js fatal error:', data);
+          console.error('Hls.js fatal error:', data.type, data.details, data);
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.warn('Hls.js: attempting network recovery...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.warn('Hls.js: attempting media recovery...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.error('Hls.js: unrecoverable error, destroying player.');
+              hls.destroy();
+              break;
+          }
         }
       });
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {

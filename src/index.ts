@@ -83,6 +83,7 @@ app.use(
   helmet({
     contentSecurityPolicy: false, // Disabled CSP so CDN-loaded Hls.js can execute smoothly
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginEmbedderPolicy: false, // Allow Hls.js to fetch video segments
   })
 );
 
