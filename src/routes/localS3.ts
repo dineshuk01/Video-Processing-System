@@ -161,6 +161,9 @@ router.get(
       let contentType = 'application/octet-stream';
       if (ext === '.m3u8') contentType = 'application/x-mpegURL';
       else if (ext === '.ts') contentType = 'video/MP2T';
+      else if (ext === '.vtt') contentType = 'text/vtt';
+      else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+      else if (ext === '.png') contentType = 'image/png';
       else if (ext === '.mp4') contentType = 'video/mp4';
       else if (ext === '.mkv') contentType = 'video/x-matroska';
       else if (ext === '.mov') contentType = 'video/quicktime';
