@@ -89,8 +89,9 @@ app.use(
 app.use(cors());
 app.use(express.json());
 
-// Apply global rate limiter to API routes
-app.use('/api', apiLimiter);
+// Apply rate limiter to REST API routes (excluding local S3 media streaming)
+app.use('/api/upload', apiLimiter);
+app.use('/api/videos', apiLimiter);
 
 // Health Check Endpoint
 app.get('/health', (req: express.Request, res: express.Response) => {
