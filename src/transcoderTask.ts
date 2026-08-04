@@ -204,25 +204,46 @@ async function executeTranscoding() {
 
     Logger.info(`Transcoder Task: Source resolution ${metadata.width}x${sourceHeight}. Generating ${eligibleVariants.length} HLS variant(s): ${eligibleVariants.map(v => v.label).join(', ')}`);
 
+    const gopSize = Math.round((metadata.fps || 30) * 6);
+    const watermarkPath = path.join(localDataDir, 'watermark.png');
+    const hasWatermark = fs.existsSync(watermarkPath);
+    if (hasWatermark) {
+      Logger.info(`Transcoder Task: Watermark image found at ${watermarkPath}. Overlaying on video.`);
+    }
+
     // Step D: Transcode eligible HLS Resolutions
-    const progressPerVariant = 75 / eligibleVariants.length; // Distribute 10% → 85% across variants
+    const progressPerVariant = 70 / eligibleVariants.length; // Distribute 10% → 80% across variants
     let currentProgress = 10;
 
     for (const variant of eligibleVariants) {
       Logger.info(`Transcoder Task: Generating ${variant.label} HLS playlist...`);
-      await runFfmpeg([
-        '-y',
-        '-i', inputFilePath,
-        '-vf', `scale=w=${variant.width}:h=${variant.height}`,
+      const ffmpegArgs = ['-y', '-i', inputFilePath];
+      
+      if (hasWatermark) {
+        ffmpegArgs.push('-i', watermarkPath);
+        ffmpegArgs.push(
+          '-filter_complex',
+          `[1:v]scale=64:-1[watermark];[0:v]scale=${variant.width}:${variant.height}[video];[video][watermark]overlay=W-w-10:10`
+        );
+      } else {
+        ffmpegArgs.push('-vf', `scale=w=${variant.width}:h=${variant.height}`);
+      }
+
+      ffmpegArgs.push(
         '-c:v', 'libx264',
         '-b:v', variant.videoBitrate,
         '-c:a', 'aac',
         '-b:a', variant.audioBitrate,
+        '-g', gopSize.toString(),
+        '-keyint_min', gopSize.toString(),
+        '-sc_threshold', '0',
         '-hls_time', '6',
         '-hls_playlist_type', 'vod',
         '-hls_segment_filename', path.join(outputDir, `output_${variant.label}_%03d.ts`),
-        path.join(outputDir, `playlist_${variant.label}.m3u8`),
-      ]);
+        path.join(outputDir, `playlist_${variant.label}.m3u8`)
+      );
+
+      await runFfmpeg(ffmpegArgs);
       currentProgress += progressPerVariant;
       await dbService.updateVideo(videoId, { progress: Math.round(currentProgress) });
     }
@@ -251,13 +272,35 @@ async function executeTranscoding() {
         ]);
       } catch {}
     }
-    await dbService.updateVideo(videoId, { progress: 88 });
+    await dbService.updateVideo(videoId, { progress: 83 });
+
+    // Step E2: Write WebVTT Subtitle Track
+    Logger.info(`Transcoder Task: Generating subtitle track files...`);
+    const subtitleFileName = 'subtitles_en.vtt';
+    const subtitleContent = `WEBVTT
+
+00:00:00.000 --> 00:00:02.500
+[VideoFlow CC] Welcome to VideoFlow adaptive player!
+
+00:00:02.500 --> 00:00:05.500
+This adaptive stream has been aligned with standard GOP keyframes.
+
+00:00:05.500 --> 00:00:08.000
+Enjoy smooth resolution switching and clear captions!
+`;
+    const subtitlePath = path.join(outputDir, subtitleFileName);
+    await fs.promises.writeFile(subtitlePath, subtitleContent, 'utf8');
+    await dbService.updateVideo(videoId, { progress: 86 });
 
     // Step F: Write Master manifest (progress 91%)
     Logger.info(`Transcoder Task: Writing master HLS playlist manifest...`);
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
+    
+    // Add subtitles declaration
+    masterPlaylistContent += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="en",URI="${subtitleFileName}"\n`;
+    
     for (const variant of eligibleVariants) {
-      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height}\n`;
+      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height},SUBTITLES="subs"\n`;
       masterPlaylistContent += `playlist_${variant.label}.m3u8\n`;
     }
 
@@ -306,12 +349,24 @@ async function executeTranscoding() {
       }
     }
 
+    // Build subtitle URL
+    let subtitleUrl: string | undefined;
+    if (fs.existsSync(subtitlePath) || files.includes(subtitleFileName)) {
+      if (process.env.CDN_BASE_URL) {
+        subtitleUrl = `${process.env.CDN_BASE_URL}/${outputKeyPrefix}/${subtitleFileName}`;
+      } else if (process.env.PROVIDER === 'aws') {
+        subtitleUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/${subtitleFileName}`;
+      } else {
+        subtitleUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/${subtitleFileName}`;
+      }
+    }
 
     await dbService.updateVideo(videoId, {
       status: VideoStatus.COMPLETED,
       progress: 100,
       hlsPlaylistUrl,
       thumbnailUrl,
+      subtitleUrl,
     });
     Logger.info(`Transcoder Task: Video ${videoId} successfully transcoded and uploaded!`);
   } catch (err: any) {

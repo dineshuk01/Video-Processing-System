@@ -148,11 +148,15 @@ export class VideoService {
     const thumbnailUrl = video.thumbnailUrl 
       ? cdnService.getPosterUrl(outputKeyPrefix, video.thumbnailUrl)
       : undefined;
+    const subtitleUrl = video.subtitleUrl
+      ? cdnService.getSubtitleUrl(outputKeyPrefix, 'subtitles_en.vtt', video.subtitleUrl)
+      : undefined;
 
     return {
       ...video,
       hlsPlaylistUrl: video.hlsPlaylistUrl ? hlsPlaylistUrl : undefined,
       thumbnailUrl: video.thumbnailUrl ? thumbnailUrl : undefined,
+      subtitleUrl: video.subtitleUrl ? subtitleUrl : undefined,
     };
   }
 

@@ -57,6 +57,13 @@ export class CdnService {
   getPosterUrl(outputKeyPrefix: string, fallbackUrl: string): string {
     return this.buildUrl(`${outputKeyPrefix}/poster.jpg`, fallbackUrl);
   }
+
+  /**
+   * Build the subtitle VTT URL for a video.
+   */
+  getSubtitleUrl(outputKeyPrefix: string, fileName: string, fallbackUrl: string): string {
+    return this.buildUrl(`${outputKeyPrefix}/${fileName}`, fallbackUrl);
+  }
 }
 
 // Export singleton instance
