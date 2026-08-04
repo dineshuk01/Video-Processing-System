@@ -168,14 +168,13 @@ router.get(
       else if (ext === '.mkv') contentType = 'video/x-matroska';
       else if (ext === '.mov') contentType = 'video/quicktime';
 
-      const stat = fs.statSync(filePath);
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Length', stat.size);
       res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('Content-Type', contentType);
 
-      const stream = fs.createReadStream(filePath);
-      stream.pipe(res);
+      return res.sendFile(filePath);
     } catch (err: any) {
       next(err);
     }
