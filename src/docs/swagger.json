@@ -1,0 +1,373 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "VideoFlow — Video Processing API",
+    "description": "REST API for uploading, transcoding, streaming, and managing video content with adaptive HLS output.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Video Processing System"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000",
+      "description": "Local Development Server"
+    }
+  ],
+  "tags": [
+    { "name": "Upload", "description": "Video upload lifecycle endpoints" },
+    { "name": "Videos", "description": "Video listing, details, and management" },
+    { "name": "Events", "description": "Server-Sent Events for real-time updates" },
+    { "name": "Metrics", "description": "Prometheus metrics endpoint" },
+    { "name": "Health", "description": "Health check endpoint" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Health Check",
+        "description": "Returns the current health status of the API server.",
+        "responses": {
+          "200": {
+            "description": "Server is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "OK" },
+                    "provider": { "type": "string", "example": "local" },
+                    "timestamp": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/upload/initiate": {
+      "post": {
+        "tags": ["Upload"],
+        "summary": "Initiate Video Upload",
+        "description": "Creates a new video record and returns a presigned upload URL. The client should PUT the file to the returned `uploadUrl`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["filename", "contentType", "fileSize"],
+                "properties": {
+                  "filename": {
+                    "type": "string",
+                    "description": "Original filename of the video",
+                    "example": "my-video.mp4"
+                  },
+                  "contentType": {
+                    "type": "string",
+                    "description": "MIME type of the video file",
+                    "example": "video/mp4",
+                    "enum": ["video/mp4", "video/quicktime", "video/x-matroska"]
+                  },
+                  "fileSize": {
+                    "type": "integer",
+                    "description": "File size in bytes",
+                    "example": 52428800
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upload initiated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "videoId": "abc123xyz",
+                    "uploadUrl": "http://localhost:5000/api/local-s3/s3-temp/raw/abc123xyz/my-video.mp4?operation=upload",
+                    "key": "raw/abc123xyz/my-video.mp4",
+                    "expiresIn": 3600
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/upload/complete": {
+      "post": {
+        "tags": ["Upload"],
+        "summary": "Complete Video Upload",
+        "description": "Confirms the file has been uploaded to S3, validates it exists, and enqueues a transcoding job.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["videoId"],
+                "properties": {
+                  "videoId": {
+                    "type": "string",
+                    "description": "The video ID returned from the initiate endpoint",
+                    "example": "abc123xyz"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upload completed and transcoding job enqueued",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/videos": {
+      "get": {
+        "tags": ["Videos"],
+        "summary": "List All Videos",
+        "description": "Returns a paginated list of all video records, sorted by creation date (newest first).",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "default": 1 },
+            "description": "Page number"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "default": 20 },
+            "description": "Results per page"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated video list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "videos": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/VideoRecord" }
+                        },
+                        "total": { "type": "integer" },
+                        "page": { "type": "integer" },
+                        "limit": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/videos/{id}": {
+      "get": {
+        "tags": ["Videos"],
+        "summary": "Get Video Details",
+        "description": "Returns the full record for a single video, including metadata, status, and streaming URLs.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Video ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Video record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": { "$ref": "#/components/schemas/VideoRecord" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Videos"],
+        "summary": "Delete Video",
+        "description": "Permanently deletes a video record and all associated files (raw upload, HLS segments, poster).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Video ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Video deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "tags": ["Events"],
+        "summary": "Server-Sent Events Stream",
+        "description": "Opens an SSE connection for real-time video status updates. Events: `initial-load` (all videos on connect), `video-update` (individual updates).",
+        "responses": {
+          "200": {
+            "description": "SSE stream opened",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "tags": ["Metrics"],
+        "summary": "Prometheus Metrics",
+        "description": "Returns application metrics in Prometheus text format (active transcodes, durations, failure counts).",
+        "responses": {
+          "200": {
+            "description": "Prometheus-formatted metrics",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "VideoRecord": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "example": "abc123xyz" },
+          "originalName": { "type": "string", "example": "my-video.mp4" },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING", "UPLOADING", "UPLOADED", "PROCESSING", "COMPLETED", "FAILED"]
+          },
+          "rawObjectKey": { "type": "string" },
+          "hlsPlaylistUrl": { "type": "string" },
+          "thumbnailUrl": { "type": "string" },
+          "subtitleUrl": { "type": "string", "description": "URL of the WebVTT subtitle track" },
+          "error": { "type": "string" },
+          "progress": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "fileSize": { "type": "integer", "description": "File size in bytes" },
+          "contentType": { "type": "string", "example": "video/mp4" },
+          "metadata": { "$ref": "#/components/schemas/VideoMetadata" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "completedAt": { "type": "string", "format": "date-time" },
+          "failedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "VideoMetadata": {
+        "type": "object",
+        "description": "Source video technical metadata extracted via ffprobe",
+        "properties": {
+          "width": { "type": "integer", "example": 1920 },
+          "height": { "type": "integer", "example": 1080 },
+          "duration": { "type": "number", "example": 120.5, "description": "Duration in seconds" },
+          "codec": { "type": "string", "example": "h264" },
+          "fps": { "type": "integer", "example": 30 },
+          "bitrate": { "type": "integer", "example": 4500, "description": "Bitrate in kbps" }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "data": { "type": "object" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": { "type": "string" },
+              "code": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad Request — invalid or missing parameters",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    }
+  }
+}

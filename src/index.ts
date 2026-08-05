@@ -6,6 +6,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { Server } from 'http';
+import swaggerUi from 'swagger-ui-express';
+import * as swaggerDocument from './docs/swagger.json';
 import { Logger } from './utils/logger';
 import { ResponseHandler } from './utils/responseHandler';
 import * as path from 'path';
@@ -81,14 +83,16 @@ app.use(
   helmet({
     contentSecurityPolicy: false, // Disabled CSP so CDN-loaded Hls.js can execute smoothly
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginEmbedderPolicy: false, // Allow Hls.js to fetch video segments
   })
 );
 
 app.use(cors());
 app.use(express.json());
 
-// Apply global rate limiter to API routes
-app.use('/api', apiLimiter);
+// Apply rate limiter to REST API routes (excluding local S3 media streaming)
+app.use('/api/upload', apiLimiter);
+app.use('/api/videos', apiLimiter);
 
 // Health Check Endpoint
 app.get('/health', (req: express.Request, res: express.Response) => {
@@ -147,6 +151,10 @@ app.get('/health/detailed', async (req: express.Request, res: express.Response) 
 
 // Serve static frontend from public/ directory
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// Register API Documentation route
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+Logger.info('API Documentation mounted at /api/docs');
 
 // Register routes
 app.use('/api/upload/initiate', uploadLimiter); // Apply strict upload rate limiter

@@ -79,10 +79,10 @@
         <!-- Video -->
         <div>
           <div class="video-wrap">
-            <video id="hls-video" controls autoplay playsinline
+            <video id="hls-video" controls playsinline muted
               style="background:#000; min-height: 240px; width: 100%;"
               poster="${video.thumbnailUrl || ''}"
-            ></video>
+            >${video.subtitleUrl ? `<track id="vtt-track" kind="subtitles" label="English" src="${video.subtitleUrl}" srclang="en">` : ''}</video>
           </div>
 
           <!-- Controls -->
@@ -104,6 +104,12 @@
                 <option value="1.5">1.5x</option>
                 <option value="2">2.0x</option>
               </select>
+            </div>
+            <!-- Subtitle toggle -->
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+              <button class="btn btn-watch" id="subtitle-toggle" style="font-size:0.8rem;padding:0.35rem 0.8rem;">
+                💬 CC: Off
+              </button>
             </div>
           </div>
         </div>
@@ -136,12 +142,18 @@
             </div>
           </div>
 
+          <div class="info-card" id="metadata-card" style="display:none;">
+            <h3>Source Metadata</h3>
+            <div class="info-row"><span class="info-label">Resolution</span><span class="info-value" id="meta-resolution">—</span></div>
+            <div class="info-row"><span class="info-label">Duration</span><span class="info-value" id="meta-duration">—</span></div>
+            <div class="info-row"><span class="info-label">Codec</span><span class="info-value" id="meta-codec">—</span></div>
+            <div class="info-row"><span class="info-label">FPS</span><span class="info-value" id="meta-fps">—</span></div>
+            <div class="info-row"><span class="info-label">Bitrate</span><span class="info-value" id="meta-bitrate">—</span></div>
+          </div>
+
           <div class="info-card">
             <h3>Adaptive Streams</h3>
-            <div class="info-row"><span class="info-label">360p</span><span class="info-value">400 kbps</span></div>
-            <div class="info-row"><span class="info-label">480p</span><span class="info-value">800 kbps</span></div>
-            <div class="info-row"><span class="info-label">720p</span><span class="info-value">2,500 kbps</span></div>
-            <div class="info-row"><span class="info-label">1080p</span><span class="info-value">4,500 kbps</span></div>
+            <div id="streams-list">Loading...</div>
           </div>
 
           <div class="info-card" style="word-break:break-all;">
@@ -152,10 +164,23 @@
         </div>
       </div>`;
 
-    // ── 3. Initialize Hls.js ─────────────────────────────────
+    // ── 3. Populate metadata sidebar ─────────────────────────
+    if (video.metadata) {
+      const mc = document.getElementById('metadata-card');
+      mc.style.display = '';
+      document.getElementById('meta-resolution').textContent = `${video.metadata.width}×${video.metadata.height}`;
+      document.getElementById('meta-duration').textContent = video.metadata.duration ? `${video.metadata.duration.toFixed(1)}s` : '—';
+      document.getElementById('meta-codec').textContent = video.metadata.codec || '—';
+      document.getElementById('meta-fps').textContent = video.metadata.fps || '—';
+      document.getElementById('meta-bitrate').textContent = video.metadata.bitrate ? `${video.metadata.bitrate} kbps` : '—';
+    }
+
+    // ── 4. Initialize Hls.js ─────────────────────────────────
     const videoEl    = document.getElementById('hls-video');
     const qualitySel = document.getElementById('quality-select');
     const speedSel   = document.getElementById('speed-select');
+    const subToggle  = document.getElementById('subtitle-toggle');
+    let subtitlesEnabled = false;
     const m3u8Url    = video.hlsPlaylistUrl;
 
     // Speed Control
@@ -221,6 +246,39 @@
           option.textContent = `${level.height}p — ${Math.round(level.bitrate / 1000)} kbps`;
           qualitySel.appendChild(option);
         });
+
+        // Populate dynamic streams list sidebar
+        const streamsList = document.getElementById('streams-list');
+        if (streamsList) {
+          streamsList.innerHTML = data.levels.map(level =>
+            `<div class="info-row"><span class="info-label">${level.height}p</span><span class="info-value">${Math.round(level.bitrate / 1000).toLocaleString()} kbps</span></div>`
+          ).join('');
+        }
+      });
+
+      // Native Subtitle Track handling
+      const textTrack = videoEl.textTracks && videoEl.textTracks[0];
+      if (video.subtitleUrl && textTrack) {
+        subToggle.style.display = '';
+        textTrack.mode = 'disabled';
+      } else if (!video.subtitleUrl) {
+        subToggle.style.display = 'none';
+      }
+
+      subToggle.addEventListener('click', () => {
+        subtitlesEnabled = !subtitlesEnabled;
+        if (videoEl.textTracks && videoEl.textTracks[0]) {
+          videoEl.textTracks[0].mode = subtitlesEnabled ? 'showing' : 'disabled';
+        }
+        if (subtitlesEnabled) {
+          subToggle.innerHTML = '💬 CC: On';
+          subToggle.style.background = 'var(--green)';
+          subToggle.style.color = '#000';
+        } else {
+          subToggle.innerHTML = '💬 CC: Off';
+          subToggle.style.background = '';
+          subToggle.style.color = '';
+        }
       });
 
       qualitySel.addEventListener('change', () => {
@@ -229,7 +287,21 @@
 
       hls.on(Hls.Events.ERROR, (event, data) => {
         if (data.fatal) {
-          console.error('Hls.js fatal error:', data);
+          console.error('Hls.js fatal error:', data.type, data.details, data);
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.warn('Hls.js: attempting network recovery...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.warn('Hls.js: attempting media recovery...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.error('Hls.js: unrecoverable error, destroying player.');
+              hls.destroy();
+              break;
+          }
         }
       });
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {

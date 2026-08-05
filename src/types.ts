@@ -7,6 +7,15 @@ export enum VideoStatus {
   FAILED = 'FAILED'
 }
 
+export interface VideoMetadata {
+  width: number;
+  height: number;
+  duration: number;   // seconds
+  codec: string;
+  fps: number;
+  bitrate?: number;   // kbps
+}
+
 export interface VideoRecord {
   id: string;
   originalName: string;
@@ -14,10 +23,12 @@ export interface VideoRecord {
   rawObjectKey?: string;
   hlsPlaylistUrl?: string;
   thumbnailUrl?: string;
+  subtitleUrl?: string;
   error?: string;
   progress: number; // 0 to 100
   fileSize: number; // in bytes
   contentType: string; // e.g. 'video/mp4'
+  metadata?: VideoMetadata;
   createdAt: string;
   updatedAt: string;
   processingStartedAt?: string;

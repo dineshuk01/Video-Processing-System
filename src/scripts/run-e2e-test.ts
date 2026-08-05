@@ -72,6 +72,7 @@ async function runE2ETest() {
     console.log('5️⃣  Polling for transcoding completion...');
     let isComplete = false;
     let attempts = 0;
+    let finalVideoRecord: any = null;
     while (!isComplete && attempts < 30) {
       const statusRes = await fetch(`${API_URL}/videos/${videoId}`);
       const statusData = await statusRes.json() as any;
@@ -84,6 +85,7 @@ async function runE2ETest() {
       
       if (status === 'COMPLETED') {
         isComplete = true;
+        finalVideoRecord = statusData.data;
         console.log('\n✅ Transcoding COMPLETED.\n');
         break;
       }
@@ -104,21 +106,59 @@ async function runE2ETest() {
     // 7. Assert Output Files Exist
     console.log('6️⃣  Verifying generated output files...');
     const processedDir = path.resolve(__dirname, `../../data/s3-public/processed/${videoId}`);
-    const requiredFiles = [
-      'master.m3u8',
-      'playlist_360p.m3u8',
-      'playlist_1080p.m3u8',
-      'poster.jpg'
+    
+    // Check metadata was saved correctly
+    if (!finalVideoRecord?.metadata) {
+      console.log('❌ Missing metadata object in final video record');
+      process.exit(1);
+    }
+    const sourceHeight = finalVideoRecord.metadata.height;
+    console.log(`   Probed Source Video Height: ${sourceHeight}px`);
+
+    const HLS_VARIANTS = [
+      { label: '360p', height: 360 },
+      { label: '480p', height: 480 },
+      { label: '720p', height: 720 },
+      { label: '1080p', height: 1080 },
     ];
 
-    for (const file of requiredFiles) {
+    const eligible = HLS_VARIANTS.filter(v => v.height <= sourceHeight);
+    if (eligible.length === 0) {
+      eligible.push(HLS_VARIANTS[0]); // fallback to at least 360p
+    }
+    const skipped = HLS_VARIANTS.filter(v => v.height > sourceHeight);
+
+    console.log(`   Expected eligible resolutions: ${eligible.map(v => v.label).join(', ')}`);
+    console.log(`   Expected skipped resolutions: ${skipped.map(v => v.label).join(', ') || 'None'}`);
+
+    // Verify required common files
+    const commonFiles = ['master.m3u8', 'poster.jpg'];
+    for (const file of commonFiles) {
       const filePath = path.join(processedDir, file);
       if (!fs.existsSync(filePath)) {
         console.log(`❌ Missing required file: ${file}`);
         process.exit(1);
       }
     }
-    console.log('✅ All required HLS playlists and poster image exist.\n');
+
+    // Verify eligible playlist files exist
+    for (const variant of eligible) {
+      const filePath = path.join(processedDir, `playlist_${variant.label}.m3u8`);
+      if (!fs.existsSync(filePath)) {
+        console.log(`❌ Missing expected eligible playlist: playlist_${variant.label}.m3u8`);
+        process.exit(1);
+      }
+    }
+
+    // Verify skipped higher resolution playlists DO NOT exist
+    for (const variant of skipped) {
+      const filePath = path.join(processedDir, `playlist_${variant.label}.m3u8`);
+      if (fs.existsSync(filePath)) {
+        console.log(`❌ Incorrectly generated higher resolution variant: playlist_${variant.label}.m3u8`);
+        process.exit(1);
+      }
+    }
+    console.log('✅ HLS playlist variants and poster image match the probed source resolution exactly!\n');
 
     // 8. Delete Video & Cleanup
     console.log(`7️⃣  Cleaning up (DELETE /api/videos/${videoId})...`);

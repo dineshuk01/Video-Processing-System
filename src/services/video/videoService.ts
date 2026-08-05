@@ -4,6 +4,7 @@ import { dbService } from '../db/dbService';
 import { getStorageService } from '../storage/storageService';
 import { getQueueService } from '../queue/queueService';
 import { Logger } from '../../utils/logger';
+import { cdnService } from '../cdn/cdnService';
 
 export class VideoService {
   private get allowedMimeTypes(): string[] {
@@ -138,12 +139,37 @@ export class VideoService {
     return updatedVideo;
   }
 
+  private applyCdnUrls(video: VideoRecord): VideoRecord {
+    if (!cdnService.isEnabled()) {
+      return video;
+    }
+    const outputKeyPrefix = `processed/${video.id}`;
+    const hlsPlaylistUrl = cdnService.getPlaylistUrl(outputKeyPrefix, video.hlsPlaylistUrl || '');
+    const thumbnailUrl = video.thumbnailUrl 
+      ? cdnService.getPosterUrl(outputKeyPrefix, video.thumbnailUrl)
+      : undefined;
+    const subtitleUrl = video.subtitleUrl
+      ? cdnService.getSubtitleUrl(outputKeyPrefix, 'subtitles_en.vtt', video.subtitleUrl)
+      : undefined;
+
+    return {
+      ...video,
+      hlsPlaylistUrl: video.hlsPlaylistUrl ? hlsPlaylistUrl : undefined,
+      thumbnailUrl: video.thumbnailUrl ? thumbnailUrl : undefined,
+      subtitleUrl: video.subtitleUrl ? subtitleUrl : undefined,
+    };
+  }
+
   async getVideos(page: number, limit: number) {
-    return dbService.listVideos(page, limit);
+    const result = await dbService.listVideos(page, limit);
+    result.videos = result.videos.map((v) => this.applyCdnUrls(v));
+    return result;
   }
 
   async getVideo(id: string) {
-    return dbService.getVideo(id);
+    const video = await dbService.getVideo(id);
+    if (!video) return null;
+    return this.applyCdnUrls(video);
   }
 
   async deleteVideo(id: string): Promise<void> {
