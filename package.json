@@ -25,6 +25,7 @@
     "@aws-sdk/client-ecs": "^3.1101.0",
     "@aws-sdk/client-s3": "^3.621.0",
     "@aws-sdk/client-sqs": "^3.621.0",
+    "@aws-sdk/s3-request-presigner": "^3.1103.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
