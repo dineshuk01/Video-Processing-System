@@ -303,11 +303,8 @@ Enjoy smooth resolution switching and clear captions!
     Logger.info(`Transcoder Task: Writing master HLS playlist manifest...`);
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
     
-    // Add subtitles declaration (point to subtitle playlist, not raw .vtt)
-    masterPlaylistContent += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="en",URI="${subtitlePlaylistName}"\n`;
-    
     for (const variant of eligibleVariants) {
-      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height},SUBTITLES="subs"\n`;
+      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height}\n`;
       masterPlaylistContent += `playlist_${variant.label}.m3u8\n`;
     }
 

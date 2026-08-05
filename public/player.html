@@ -82,7 +82,7 @@
             <video id="hls-video" controls playsinline muted
               style="background:#000; min-height: 240px; width: 100%;"
               poster="${video.thumbnailUrl || ''}"
-            ></video>
+            >${video.subtitleUrl ? `<track id="vtt-track" kind="subtitles" label="English" src="${video.subtitleUrl}" srclang="en">` : ''}</video>
           </div>
 
           <!-- Controls -->
@@ -256,28 +256,25 @@
         }
       });
 
-      // Subtitle track handling
-      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (event, data) => {
-        if (data.subtitleTracks && data.subtitleTracks.length > 0) {
-          subToggle.style.display = '';
-          // Start with subtitles off
-          hls.subtitleTrack = -1;
-        } else {
-          subToggle.style.display = 'none';
-        }
-      });
+      // Native Subtitle Track handling
+      const textTrack = videoEl.textTracks && videoEl.textTracks[0];
+      if (video.subtitleUrl && textTrack) {
+        subToggle.style.display = '';
+        textTrack.mode = 'disabled';
+      } else if (!video.subtitleUrl) {
+        subToggle.style.display = 'none';
+      }
 
       subToggle.addEventListener('click', () => {
         subtitlesEnabled = !subtitlesEnabled;
-        if (subtitlesEnabled && hls.subtitleTracks.length > 0) {
-          hls.subtitleTrack = 0;
-          hls.subtitleDisplay = true;
+        if (videoEl.textTracks && videoEl.textTracks[0]) {
+          videoEl.textTracks[0].mode = subtitlesEnabled ? 'showing' : 'disabled';
+        }
+        if (subtitlesEnabled) {
           subToggle.innerHTML = '💬 CC: On';
           subToggle.style.background = 'var(--green)';
           subToggle.style.color = '#000';
         } else {
-          hls.subtitleTrack = -1;
-          hls.subtitleDisplay = false;
           subToggle.innerHTML = '💬 CC: Off';
           subToggle.style.background = '';
           subToggle.style.color = '';
