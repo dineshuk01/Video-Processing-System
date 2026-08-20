@@ -152,6 +152,11 @@ app.get('/health/detailed', async (req: express.Request, res: express.Response) 
 // Serve static frontend from public/ directory
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// Explicit Admin Portal route
+app.get('/admin', (req: express.Request, res: express.Response) => {
+  return res.sendFile(path.join(__dirname, '..', 'public', 'admin.html'));
+});
+
 // Register API Documentation route
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 Logger.info('API Documentation mounted at /api/docs');

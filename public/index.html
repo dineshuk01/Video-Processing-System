@@ -3,93 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EternityStream — Wedding Cinema Video Processing Suite</title>
-  <meta name="description" content="Transform wedding highlight films, ceremony footage, and memories into adaptive HLS streams." />
+  <title>EternityStream — Wedding Cinema Gallery</title>
+  <meta name="description" content="Experience magical wedding films and memories in cinematic adaptive 4K HLS streaming." />
   <link rel="stylesheet" href="app.css" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🥂</text></svg>" />
 </head>
 <body>
 
-  <!-- ── Header ── -->
+  <!-- ── Client Header ── -->
   <header class="header">
     <a class="header-brand" href="/">
       <div class="logo-icon">✨</div>
       <div>
         EternityStream
-        <span class="header-subtitle">Wedding Cinema Suite</span>
+        <span class="header-subtitle">Wedding Cinema Gallery</span>
       </div>
     </a>
-    <div style="display:flex;align-items:center;gap:1.5rem;">
-      <span class="live-badge hidden" id="live-badge">Live Updates</span>
-      <div class="status-dot">Studio Vault Active</div>
+    <div style="display:flex;align-items:center;gap:1.25rem;">
+      <a href="/admin" class="btn btn-secondary" style="font-size:0.85rem;padding:0.4rem 1rem;">🔐 Studio Admin</a>
+      <div class="status-dot">Live Gallery</div>
     </div>
   </header>
 
   <!-- ── Main ── -->
   <main class="container">
-    <div style="margin: 2rem 0 2.5rem;">
-      <h1 class="page-title">Wedding Cinema Processing Suite</h1>
-      <p class="page-subtitle">Upload 4K wedding highlight films, ceremony vows, and reception footage into high-performance adaptive HLS streams.</p>
+    <div style="margin: 2rem 0 2.5rem; text-align:center;">
+      <h1 class="page-title">Wedding Cinema &amp; Memories</h1>
+      <p class="page-subtitle">Stream 4K wedding highlight films, ceremony vows, and reception memories in smooth adaptive quality.</p>
+      
+      <!-- Category Filter Pills -->
+      <div style="display:flex;justify-content:center;gap:0.75rem;flex-wrap:wrap;margin-top:1.5rem;" id="filter-pills">
+        <button class="btn btn-secondary active-pill" data-filter="ALL">✨ All Films</button>
+        <button class="btn btn-secondary" data-filter="Highlight">💍 Highlight Reels</button>
+        <button class="btn btn-secondary" data-filter="Ceremony">🥂 Full Ceremonies</button>
+        <button class="btn btn-secondary" data-filter="Teaser">✨ Teasers</button>
+        <button class="btn btn-secondary" data-filter="Reception">🎉 Receptions</button>
+      </div>
     </div>
 
-    <!-- ── Upload Section ── -->
-    <section class="upload-section">
-      <!-- Category Selection -->
-      <div class="wedding-meta-select">
-        <label for="category-select">Film Category:</label>
-        <select class="category-dropdown" id="category-select">
-          <option value="💍 Highlight Reel">💍 Wedding Highlight Film</option>
-          <option value="🥂 Full Ceremony">🥂 Full Ceremony & Vows</option>
-          <option value="✨ Teaser Reel">✨ Teaser Reel</option>
-          <option value="🎉 Reception">🎉 Reception & Speeches</option>
-          <option value="🎥 Raw Footage">🎥 Raw Studio Footage</option>
-        </select>
-      </div>
-
-      <div class="upload-zone" id="upload-zone">
-        <input type="file" id="file-input" accept="video/mp4,video/quicktime,video/x-matroska" />
-        <div class="upload-icon">🥂</div>
-        <h3>Drag &amp; drop wedding footage, or click to browse</h3>
-        <p>Supports MP4, MOV, MKV · Up to 10GB 4K Cinema Footage</p>
-      </div>
-
-      <!-- Selected file info -->
-      <div class="upload-selected hidden" id="upload-selected">
-        <div class="file-info">
-          <div class="file-name" id="file-name-display">—</div>
-          <div class="file-meta" id="file-meta-display">—</div>
-        </div>
-        <button class="btn btn-primary" id="upload-btn" disabled>
-          ✨ Process Wedding Film
-        </button>
-      </div>
-
-      <!-- Upload progress -->
-      <div class="progress-wrap" id="progress-wrap">
-        <div class="progress-label">
-          <span id="progress-label">Uploading footage…</span>
-          <span></span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" id="progress-fill"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Video Library ── -->
+    <!-- ── Completed Video Gallery ── -->
     <section>
       <div class="section-header">
         <h2 class="section-title">
-          🎞 Studio Wedding Vault
-          <span class="badge-count" id="total-count">0</span>
+          🎬 Cinema Collection
+          <span class="badge-count" id="gallery-count">0</span>
         </h2>
       </div>
-      <div class="video-grid" id="video-grid">
-        <!-- Cards injected by app.js -->
+      <div class="video-grid" id="client-grid">
+        <!-- Injected by client.js -->
       </div>
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <script src="client.js"></script>
 </body>
 </html>

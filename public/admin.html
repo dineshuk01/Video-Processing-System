@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EternityStream — Studio Admin Portal</title>
+  <meta name="description" content="Studio Admin Vault for uploading and transcoding wedding cinema films." />
+  <link rel="stylesheet" href="app.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🔐</text></svg>" />
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header class="header">
+    <a class="header-brand" href="/admin">
+      <div class="logo-icon">🔐</div>
+      <div>
+        EternityStream
+        <span class="header-subtitle">Studio Admin Portal</span>
+      </div>
+    </a>
+    <div style="display:flex;align-items:center;gap:1.25rem;">
+      <a href="/" class="btn btn-secondary" style="font-size:0.85rem;padding:0.4rem 1rem;">🌐 View Client Gallery</a>
+      <span class="live-badge hidden" id="live-badge">Live Sync</span>
+      <div class="status-dot">Admin Active</div>
+    </div>
+  </header>
+
+  <!-- ── Main ── -->
+  <main class="container">
+    <div style="margin: 2rem 0 2.5rem;">
+      <h1 class="page-title">Studio Video Processing Vault</h1>
+      <p class="page-subtitle">Upload 4K wedding highlight films, ceremony vows, and reception footage into high-performance adaptive HLS streams.</p>
+    </div>
+
+    <!-- ── Upload Section ── -->
+    <section class="upload-section">
+      <!-- Category Selection -->
+      <div class="wedding-meta-select">
+        <label for="category-select">Film Category:</label>
+        <select class="category-dropdown" id="category-select">
+          <option value="💍 Highlight Reel">💍 Wedding Highlight Film</option>
+          <option value="🥂 Full Ceremony">🥂 Full Ceremony &amp; Vows</option>
+          <option value="✨ Teaser Reel">✨ Teaser Reel</option>
+          <option value="🎉 Reception">🎉 Reception &amp; Speeches</option>
+          <option value="🎥 Raw Footage">🎥 Raw Studio Footage</option>
+        </select>
+      </div>
+
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" accept="video/mp4,video/quicktime,video/x-matroska" />
+        <div class="upload-icon">🥂</div>
+        <h3>Drag &amp; drop wedding footage, or click to browse</h3>
+        <p>Supports MP4, MOV, MKV · Up to 10GB 4K Cinema Footage</p>
+      </div>
+
+      <!-- Selected file info -->
+      <div class="upload-selected hidden" id="upload-selected">
+        <div class="file-info">
+          <div class="file-name" id="file-name-display">—</div>
+          <div class="file-meta" id="file-meta-display">—</div>
+        </div>
+        <button class="btn btn-primary" id="upload-btn" disabled>
+          ✨ Process Wedding Film
+        </button>
+      </div>
+
+      <!-- Upload progress -->
+      <div class="progress-wrap" id="progress-wrap">
+        <div class="progress-label">
+          <span id="progress-label">Uploading footage…</span>
+          <span></span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Video Library ── -->
+    <section>
+      <div class="section-header">
+        <h2 class="section-title">
+          🎞 All Studio Video Records
+          <span class="badge-count" id="total-count">0</span>
+        </h2>
+      </div>
+      <div class="video-grid" id="video-grid">
+        <!-- Cards injected by app.js -->
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
