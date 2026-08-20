@@ -15,10 +15,13 @@
   <!-- ── Header ── -->
   <header class="header">
     <a class="header-brand" href="/">
-      <div class="logo-icon">🎬</div>
-      VideoFlow
+      <div class="logo-icon">✨</div>
+      <div>
+        EternityStream
+        <span class="header-subtitle">Cinema Theater</span>
+      </div>
     </a>
-    <a class="back-link" href="/">← Back to Dashboard</a>
+    <a class="back-link" href="/">← Back to Wedding Studio Vault</a>
   </header>
 
   <!-- ── Player Layout ── -->
@@ -116,10 +119,10 @@
 
         <!-- Sidebar -->
         <div class="player-sidebar">
-          <a class="back-link" href="/">← All Videos</a>
+          <a class="back-link" href="/">← Back to Wedding Studio Vault</a>
 
           <div class="info-card">
-            <h3>Video Info</h3>
+            <h3>Wedding Film Details</h3>
             <div class="info-row">
               <span class="info-label">File</span>
               <span class="info-value" style="text-align:right;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${video.originalName}">${video.originalName}</span>
@@ -157,9 +160,9 @@
           </div>
 
           <div class="info-card" style="word-break:break-all;">
-            <h3>Playlist URL</h3>
+            <h3>Couples Shareable Stream Link</h3>
             <code id="playlist-url" style="font-size:0.7rem;color:var(--text-secondary);display:block;margin-bottom:0.5rem;">${video.hlsPlaylistUrl}</code>
-            <button class="btn btn-watch" style="width:100%;text-align:center;justify-content:center;" onclick="navigator.clipboard.writeText('${video.hlsPlaylistUrl}')">📋 Copy Link</button>
+            <button class="btn btn-watch" style="width:100%;text-align:center;justify-content:center;" onclick="navigator.clipboard.writeText('${video.hlsPlaylistUrl}')">📋 Copy Share Link</button>
           </div>
         </div>
       </div>`;

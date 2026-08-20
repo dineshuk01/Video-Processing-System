@@ -1,5 +1,5 @@
 /* ============================================================
-   Video Processing System — Dashboard Application Logic
+   EternityStream — Wedding Cinema Suite Application Logic
    ============================================================ */
 
 // ─── State ──────────────────────────────────────────────────
@@ -20,6 +20,7 @@ const progressLabel  = document.getElementById('progress-label');
 const videoGrid      = document.getElementById('video-grid');
 const totalCount     = document.getElementById('total-count');
 const liveBadge      = document.getElementById('live-badge');
+const categorySelect = document.getElementById('category-select');
 
 // ─── Format Helpers ──────────────────────────────────────────
 function formatBytes(bytes) {
@@ -37,16 +38,16 @@ function formatDate(iso) {
   });
 }
 
-function statusLabel(status) {
+function statusBadgeHtml(status) {
   const map = {
-    PENDING: '⏳ Pending',
-    UPLOADING: '⬆ Uploading',
-    UPLOADED: '☁ Uploaded',
-    PROCESSING: '⚙ Processing',
-    COMPLETED: '✅ Completed',
-    FAILED: '❌ Failed',
+    PENDING: '<span class="card-badge badge-pending">⏳ Pending</span>',
+    UPLOADING: '<span class="card-badge badge-pending">⬆ Uploading</span>',
+    UPLOADED: '<span class="card-badge badge-pending">☁ Uploaded</span>',
+    PROCESSING: '<span class="card-badge badge-processing">⚙ Transcoding</span>',
+    COMPLETED: '<span class="card-badge badge-completed">✅ Ready for Couples</span>',
+    FAILED: '<span class="card-badge badge-failed">❌ Processing Error</span>',
   };
-  return map[status] || status;
+  return map[status] || `<span class="card-badge badge-pending">${status}</span>`;
 }
 
 // ─── Render Video Card HTML ───────────────────────────────────
@@ -55,61 +56,65 @@ function renderCard(v) {
   const isCompleted  = v.status === 'COMPLETED';
   const isFailed     = v.status === 'FAILED';
 
-  const fillClass = isProcessing ? 'fill-processing'
-    : isCompleted ? 'fill-completed'
-    : isFailed    ? 'fill-failed'
-    : '';
-
   const progress = v.progress || 0;
   const showProgress = ['PROCESSING', 'COMPLETED', 'FAILED'].includes(v.status);
   
-  const posterHtml = v.thumbnailUrl ? 
-    `<div class="card-poster" style="background-image: url('${v.thumbnailUrl}')"></div>` : 
-    `<div class="card-poster placeholder-poster">🎬</div>`;
+  // Category inference fallback
+  const categoryTag = v.category || (
+    v.originalName.toLowerCase().includes('teaser') ? '✨ Teaser Reel' :
+    v.originalName.toLowerCase().includes('ceremony') ? '🥂 Full Ceremony' :
+    v.originalName.toLowerCase().includes('reception') ? '🎉 Reception' :
+    '💍 Highlight Reel'
+  );
+
+  const thumbHtml = v.thumbnailUrl ? 
+    `<img src="${v.thumbnailUrl}" alt="${v.originalName}" loading="lazy" />` : 
+    `<div class="card-thumb-placeholder">🥂<span>Wedding Cinema</span></div>`;
 
   return `
-    <div class="video-card" id="card-${v.id}" style="animation-delay: 0s">
-      ${posterHtml}
-      <div class="card-header">
-        <div>
-          <div class="card-filename" title="${v.originalName}">${v.originalName}</div>
-          <div class="card-id">${v.id}</div>
-        </div>
-        <span class="status-badge status-${v.status}">${statusLabel(v.status)}</span>
+    <div class="video-card" id="card-${v.id}">
+      <div class="card-thumb">
+        ${thumbHtml}
+        <span class="wedding-tag-badge">${categoryTag}</span>
+        ${statusBadgeHtml(v.status)}
       </div>
 
-      ${showProgress ? `
-        <div class="card-progress">
-          <div class="card-progress-label">
-            <span>${isCompleted ? 'Transcoded' : isProcessing ? 'Transcoding…' : 'Failed'}</span>
-            <span>${progress}%</span>
-          </div>
-          <div class="card-progress-track">
-            <div class="card-progress-fill ${fillClass}" style="width: ${progress}%"></div>
-          </div>
+      <div class="card-body">
+        <div class="card-title" title="${v.originalName}">${v.originalName}</div>
+        
+        <div class="card-meta">
+          <span>📹 ${v.metadata ? `${v.metadata.width}x${v.metadata.height}` : 'HD Cinema'}</span>
+          <span>💾 ${formatBytes(v.fileSize)}</span>
+          <span>🕐 ${formatDate(v.createdAt)}</span>
         </div>
-      ` : ''}
 
-      ${isFailed && v.error ? `<div class="error-text">⚠ ${v.error}</div>` : ''}
+        ${showProgress ? `
+          <div style="margin-bottom:1rem;">
+            <div class="progress-label" style="font-size:0.75rem;">
+              <span>${isCompleted ? 'HLS Stream Ready' : isProcessing ? 'Processing Multi-Bitrate HLS…' : 'Failed'}</span>
+              <span>${progress}%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" style="width: ${progress}%;"></div>
+            </div>
+          </div>
+        ` : ''}
 
-      <div class="card-meta">
-        <span class="meta-item">🎬 ${v.contentType || 'video/mp4'}</span>
-        <span class="meta-item">💾 ${formatBytes(v.fileSize)}</span>
-        <span class="meta-item">🕐 ${formatDate(v.createdAt)}</span>
-      </div>
+        ${isFailed && v.error ? `<div style="color:var(--red);font-size:0.8rem;margin-bottom:0.75rem;">⚠ ${v.error}</div>` : ''}
 
-      <div class="card-footer" style="display: flex; justify-content: space-between;">
-        <button class="btn btn-delete" onclick="deleteVideo('${v.id}')">🗑 Delete</button>
-        ${isCompleted ? `
-          <a class="btn btn-watch" href="player.html?id=${v.id}">▶ Watch</a>
-        ` : '<div></div>'}
+        <div class="card-footer">
+          <button class="btn btn-danger" style="font-size:0.75rem;padding:0.4rem 0.75rem;" onclick="deleteVideo('${v.id}')">🗑 Delete</button>
+          ${isCompleted ? `
+            <a class="btn btn-watch" style="font-size:0.85rem;padding:0.4rem 1rem;" href="player.html?id=${v.id}">🎬 Watch Cinema</a>
+          ` : '<div></div>'}
+        </div>
       </div>
     </div>`;
 }
 
 // ─── Delete Video Logic ───────────────────────────────────────
 async function deleteVideo(id) {
-  if (!confirm('Are you sure you want to delete this video and all its files?')) return;
+  if (!confirm('Are you sure you want to delete this wedding video and all processed HLS files?')) return;
   
   try {
     const res = await fetch(`/api/videos/${id}`, { method: 'DELETE' });
@@ -132,37 +137,29 @@ async function deleteVideo(id) {
 
 // ─── Update or Insert Card ────────────────────────────────────
 function upsertCard(video) {
-  // Ignore if we deleted this locally already and an old event arrives
-  if (state.videos[video.id] === undefined && document.getElementById(`card-${video.id}`) === null && Object.keys(state.videos).length > 0 && !video.createdAt) {
-      // It might be a spurious update for a deleted video
-  }
-  
   state.videos[video.id] = video;
 
   const existing = document.getElementById(`card-${video.id}`);
   const html = renderCard(video);
 
   if (existing) {
-    // Patch in place — preserve animation state
     existing.outerHTML = html;
   } else {
-    // Prepend new card
     videoGrid.insertAdjacentHTML('afterbegin', html);
-    // Remove empty state if present
     const empty = document.getElementById('empty-state');
     if (empty) empty.remove();
   }
 
-  // Update count badge
   totalCount.textContent = Object.keys(state.videos).length;
 }
 
 // ─── Render Empty State ───────────────────────────────────────
 function renderEmptyState() {
   videoGrid.innerHTML = `
-    <div class="empty-state" id="empty-state">
-      <div class="empty-icon">🎥</div>
-      <p>No videos yet. Upload your first video above to get started.</p>
+    <div style="grid-column:1/-1;text-align:center;padding:4rem 2rem;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);" id="empty-state">
+      <div style="font-size:3rem;margin-bottom:1rem;">🥂</div>
+      <h3 style="font-family:'Playfair Display',serif;font-size:1.35rem;margin-bottom:0.5rem;color:var(--text-primary);">No Wedding Films Transcoded Yet</h3>
+      <p style="color:var(--text-secondary);font-size:0.9rem;">Upload your first wedding highlight reel, ceremony vows, or teaser above to start the adaptive HLS pipeline.</p>
     </div>`;
 }
 
@@ -176,7 +173,6 @@ function initSSE() {
       renderEmptyState();
     } else {
       videoGrid.innerHTML = '';
-      // Sort newest first
       videos.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
       videos.forEach(upsertCard);
     }
@@ -209,7 +205,7 @@ function handleFileSelect(file) {
   uploadSelected.classList.remove('hidden');
   document.getElementById('file-name-display').textContent = file.name;
   document.getElementById('file-meta-display').textContent =
-    `${formatBytes(file.size)} • ${file.type}`;
+    `${formatBytes(file.size)} • ${file.type} • ${categorySelect.value}`;
   uploadBtn.disabled = false;
 }
 
@@ -235,8 +231,8 @@ uploadBtn.addEventListener('click', async () => {
 
   state.uploading = true;
   uploadBtn.disabled = true;
-  uploadBtn.textContent = 'Uploading…';
-  progressWrap.classList.add('visible');
+  uploadBtn.textContent = '✨ Processing...';
+  progressWrap.classList.add('active');
   progressFill.style.width = '0%';
 
   try {
@@ -255,6 +251,11 @@ uploadBtn.addEventListener('click', async () => {
 
     const { videoId, uploadUrl } = initJson.data;
 
+    // Attach category locally to state
+    if (state.videos[videoId]) {
+      state.videos[videoId].category = categorySelect.value;
+    }
+
     // 2. XHR PUT with progress tracking
     await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -265,7 +266,7 @@ uploadBtn.addEventListener('click', async () => {
         if (e.lengthComputable) {
           const pct = Math.round((e.loaded / e.total) * 100);
           progressFill.style.width = `${pct}%`;
-          progressLabel.textContent = `Uploading… ${pct}% (${formatBytes(e.loaded)} / ${formatBytes(e.total)})`;
+          progressLabel.textContent = `Uploading Footage… ${pct}% (${formatBytes(e.loaded)} / ${formatBytes(e.total)})`;
         }
       };
 
@@ -278,7 +279,7 @@ uploadBtn.addEventListener('click', async () => {
     });
 
     progressFill.style.width = '100%';
-    progressLabel.textContent = 'Upload complete. Notifying server…';
+    progressLabel.textContent = 'Upload complete. Queuing HLS transcoding task…';
 
     // 3. Complete upload
     const completeRes = await fetch('/api/upload/complete', {
@@ -289,21 +290,21 @@ uploadBtn.addEventListener('click', async () => {
     const completeJson = await completeRes.json();
     if (!completeJson.success) throw new Error(completeJson.error?.message || 'Complete failed');
 
-    progressLabel.textContent = '✅ Sent to transcoding queue!';
-    uploadBtn.textContent = 'Upload Another';
+    progressLabel.textContent = '✨ Sent to HLS Transcoding Pipeline!';
+    uploadBtn.textContent = 'Upload Another Film';
     state.selectedFile = null;
     uploadSelected.classList.add('hidden');
     fileInput.value = '';
 
     setTimeout(() => {
-      progressWrap.classList.remove('visible');
+      progressWrap.classList.remove('active');
       progressFill.style.width = '0%';
-    }, 3000);
+    }, 4000);
 
   } catch (err) {
     progressLabel.textContent = `❌ Error: ${err.message}`;
-    progressFill.style.background = '#ef4444';
-    uploadBtn.textContent = 'Retry';
+    progressFill.style.background = 'var(--red)';
+    uploadBtn.textContent = 'Retry Processing';
   } finally {
     state.uploading = false;
     uploadBtn.disabled = false;

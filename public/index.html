@@ -3,39 +3,54 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VideoFlow — Video Processing Dashboard</title>
-  <meta name="description" content="Upload, transcode, and stream adaptive HLS videos with VideoFlow." />
+  <title>EternityStream — Wedding Cinema Video Processing Suite</title>
+  <meta name="description" content="Transform wedding highlight films, ceremony footage, and memories into adaptive HLS streams." />
   <link rel="stylesheet" href="app.css" />
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🎬</text></svg>" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🥂</text></svg>" />
 </head>
 <body>
 
   <!-- ── Header ── -->
   <header class="header">
     <a class="header-brand" href="/">
-      <div class="logo-icon">🎬</div>
-      VideoFlow
+      <div class="logo-icon">✨</div>
+      <div>
+        EternityStream
+        <span class="header-subtitle">Wedding Cinema Suite</span>
+      </div>
     </a>
     <div style="display:flex;align-items:center;gap:1.5rem;">
-      <span class="live-badge hidden" id="live-badge">Live</span>
-      <div class="status-dot">API Connected</div>
+      <span class="live-badge hidden" id="live-badge">Live Updates</span>
+      <div class="status-dot">Studio Vault Active</div>
     </div>
   </header>
 
   <!-- ── Main ── -->
   <main class="container">
     <div style="margin: 2rem 0 2.5rem;">
-      <h1 class="page-title">Video Processing Dashboard</h1>
-      <p class="page-subtitle">Upload a video to start the adaptive HLS transcoding pipeline.</p>
+      <h1 class="page-title">Wedding Cinema Processing Suite</h1>
+      <p class="page-subtitle">Upload 4K wedding highlight films, ceremony vows, and reception footage into high-performance adaptive HLS streams.</p>
     </div>
 
     <!-- ── Upload Section ── -->
     <section class="upload-section">
+      <!-- Category Selection -->
+      <div class="wedding-meta-select">
+        <label for="category-select">Film Category:</label>
+        <select class="category-dropdown" id="category-select">
+          <option value="💍 Highlight Reel">💍 Wedding Highlight Film</option>
+          <option value="🥂 Full Ceremony">🥂 Full Ceremony & Vows</option>
+          <option value="✨ Teaser Reel">✨ Teaser Reel</option>
+          <option value="🎉 Reception">🎉 Reception & Speeches</option>
+          <option value="🎥 Raw Footage">🎥 Raw Studio Footage</option>
+        </select>
+      </div>
+
       <div class="upload-zone" id="upload-zone">
         <input type="file" id="file-input" accept="video/mp4,video/quicktime,video/x-matroska" />
-        <div class="upload-icon">📤</div>
-        <h3>Drag & drop a video, or click to browse</h3>
-        <p>Supports MP4, MOV, MKV · Max 100MB</p>
+        <div class="upload-icon">🥂</div>
+        <h3>Drag &amp; drop wedding footage, or click to browse</h3>
+        <p>Supports MP4, MOV, MKV · Automatic HLS Multibitrate Encoding</p>
       </div>
 
       <!-- Selected file info -->
@@ -45,14 +60,14 @@
           <div class="file-meta" id="file-meta-display">—</div>
         </div>
         <button class="btn btn-primary" id="upload-btn" disabled>
-          ⬆ Upload &amp; Transcode
+          ✨ Process Wedding Film
         </button>
       </div>
 
       <!-- Upload progress -->
       <div class="progress-wrap" id="progress-wrap">
         <div class="progress-label">
-          <span id="progress-label">Uploading…</span>
+          <span id="progress-label">Uploading footage…</span>
           <span></span>
         </div>
         <div class="progress-track">
@@ -65,7 +80,7 @@
     <section>
       <div class="section-header">
         <h2 class="section-title">
-          🎞 Video Library
+          🎞 Studio Wedding Vault
           <span class="badge-count" id="total-count">0</span>
         </h2>
       </div>
