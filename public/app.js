@@ -1,5 +1,5 @@
 /* ============================================================
-   EternityStream — Wedding Cinema Suite Application Logic
+   EternityStream — Wedding Cinema Suite Admin Application Logic
    ============================================================ */
 
 // ─── State ──────────────────────────────────────────────────
@@ -21,6 +21,63 @@ const videoGrid      = document.getElementById('video-grid');
 const totalCount     = document.getElementById('total-count');
 const liveBadge      = document.getElementById('live-badge');
 const categorySelect = document.getElementById('category-select');
+
+const loginModal     = document.getElementById('login-modal');
+const loginForm      = document.getElementById('login-form');
+const adminPassInput = document.getElementById('admin-pass-input');
+const loginError     = document.getElementById('login-error');
+const logoutBtn      = document.getElementById('logout-btn');
+
+// ─── Auth Token Helper ───────────────────────────────────────
+function getAdminToken() {
+  return sessionStorage.getItem('adminToken') || '';
+}
+
+function checkAuth() {
+  const token = getAdminToken();
+  if (token) {
+    if (loginModal) loginModal.style.display = 'none';
+    if (logoutBtn) logoutBtn.classList.remove('hidden');
+  } else {
+    if (loginModal) loginModal.style.display = 'flex';
+    if (logoutBtn) logoutBtn.classList.add('hidden');
+  }
+}
+
+if (loginForm) {
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    loginError.style.display = 'none';
+    const password = adminPassInput.value;
+
+    try {
+      const res = await fetch('/api/upload/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const json = await res.json();
+
+      if (!json.success) {
+        throw new Error(json.error?.message || 'Invalid admin password');
+      }
+
+      sessionStorage.setItem('adminToken', json.data.token);
+      checkAuth();
+      adminPassInput.value = '';
+    } catch (err) {
+      loginError.textContent = `❌ ${err.message}`;
+      loginError.style.display = 'block';
+    }
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', () => {
+    sessionStorage.removeItem('adminToken');
+    checkAuth();
+  });
+}
 
 // ─── Format Helpers ──────────────────────────────────────────
 function formatBytes(bytes) {
@@ -59,7 +116,6 @@ function renderCard(v) {
   const progress = v.progress || 0;
   const showProgress = ['PROCESSING', 'COMPLETED', 'FAILED'].includes(v.status);
   
-  // Category inference fallback
   const categoryTag = v.category || (
     v.originalName.toLowerCase().includes('teaser') ? '✨ Teaser Reel' :
     v.originalName.toLowerCase().includes('ceremony') ? '🥂 Full Ceremony' :
@@ -117,7 +173,12 @@ async function deleteVideo(id) {
   if (!confirm('Are you sure you want to delete this wedding video and all processed HLS files?')) return;
   
   try {
-    const res = await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/videos/${id}`, {
+      method: 'DELETE',
+      headers: {
+        'X-Admin-Password': getAdminToken(),
+      },
+    });
     const json = await res.json();
     if (!json.success) throw new Error(json.error?.message || 'Delete failed');
     
@@ -209,110 +270,118 @@ function handleFileSelect(file) {
   uploadBtn.disabled = false;
 }
 
-uploadZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  uploadZone.classList.add('dragover');
-});
-uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
-uploadZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  uploadZone.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if (file) handleFileSelect(file);
-});
-fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) handleFileSelect(fileInput.files[0]);
-});
+if (uploadZone) {
+  uploadZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadZone.classList.add('dragover');
+  });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+  uploadZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadZone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) handleFileSelect(file);
+  });
+}
+if (fileInput) {
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) handleFileSelect(fileInput.files[0]);
+  });
+}
 
 // ─── Upload Pipeline ──────────────────────────────────────────
-uploadBtn.addEventListener('click', async () => {
-  const file = state.selectedFile;
-  if (!file || state.uploading) return;
+if (uploadBtn) {
+  uploadBtn.addEventListener('click', async () => {
+    const file = state.selectedFile;
+    if (!file || state.uploading) return;
 
-  state.uploading = true;
-  uploadBtn.disabled = true;
-  uploadBtn.textContent = '✨ Processing...';
-  progressWrap.classList.add('active');
-  progressFill.style.width = '0%';
+    state.uploading = true;
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = '✨ Processing...';
+    progressWrap.classList.add('active');
+    progressFill.style.width = '0%';
 
-  try {
-    // 1. Initiate upload
-    const initRes = await fetch('/api/upload/initiate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filename: file.name,
-        contentType: file.type,
-        fileSize: file.size,
-      }),
-    });
-    const initJson = await initRes.json();
-    if (!initJson.success) throw new Error(initJson.error?.message || 'Initiate failed');
+    try {
+      // 1. Initiate upload (With Admin Auth Header)
+      const initRes = await fetch('/api/upload/initiate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Password': getAdminToken(),
+        },
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type,
+          fileSize: file.size,
+        }),
+      });
+      const initJson = await initRes.json();
+      if (!initJson.success) throw new Error(initJson.error?.message || 'Initiate failed');
 
-    const { videoId, uploadUrl } = initJson.data;
+      const { videoId, uploadUrl } = initJson.data;
 
-    // Attach category locally to state
-    if (state.videos[videoId]) {
-      state.videos[videoId].category = categorySelect.value;
+      // 2. XHR PUT with progress tracking
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', file.type);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            progressFill.style.width = `${pct}%`;
+            progressLabel.textContent = `Uploading Footage… ${pct}% (${formatBytes(e.loaded)} / ${formatBytes(e.total)})`;
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.responseText}`));
+        };
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.send(file);
+      });
+
+      progressFill.style.width = '100%';
+      progressLabel.textContent = 'Upload complete. Queuing HLS transcoding task…';
+
+      // 3. Complete upload (With Admin Auth Header)
+      const completeRes = await fetch('/api/upload/complete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Password': getAdminToken(),
+        },
+        body: JSON.stringify({ videoId }),
+      });
+      const completeJson = await completeRes.json();
+      if (!completeJson.success) throw new Error(completeJson.error?.message || 'Complete failed');
+
+      progressLabel.textContent = '✨ Sent to HLS Transcoding Pipeline!';
+      uploadBtn.textContent = 'Upload Another Film';
+      state.selectedFile = null;
+      uploadSelected.classList.add('hidden');
+      fileInput.value = '';
+
+      setTimeout(() => {
+        progressWrap.classList.remove('active');
+        progressFill.style.width = '0%';
+      }, 4000);
+
+    } catch (err) {
+      progressLabel.textContent = `❌ Error: ${err.message}`;
+      progressFill.style.background = 'var(--red)';
+      uploadBtn.textContent = 'Retry Processing';
+    } finally {
+      state.uploading = false;
+      uploadBtn.disabled = false;
     }
-
-    // 2. XHR PUT with progress tracking
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('PUT', uploadUrl);
-      xhr.setRequestHeader('Content-Type', file.type);
-
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
-          progressFill.style.width = `${pct}%`;
-          progressLabel.textContent = `Uploading Footage… ${pct}% (${formatBytes(e.loaded)} / ${formatBytes(e.total)})`;
-        }
-      };
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.responseText}`));
-      };
-      xhr.onerror = () => reject(new Error('Network error during upload'));
-      xhr.send(file);
-    });
-
-    progressFill.style.width = '100%';
-    progressLabel.textContent = 'Upload complete. Queuing HLS transcoding task…';
-
-    // 3. Complete upload
-    const completeRes = await fetch('/api/upload/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoId }),
-    });
-    const completeJson = await completeRes.json();
-    if (!completeJson.success) throw new Error(completeJson.error?.message || 'Complete failed');
-
-    progressLabel.textContent = '✨ Sent to HLS Transcoding Pipeline!';
-    uploadBtn.textContent = 'Upload Another Film';
-    state.selectedFile = null;
-    uploadSelected.classList.add('hidden');
-    fileInput.value = '';
-
-    setTimeout(() => {
-      progressWrap.classList.remove('active');
-      progressFill.style.width = '0%';
-    }, 4000);
-
-  } catch (err) {
-    progressLabel.textContent = `❌ Error: ${err.message}`;
-    progressFill.style.background = 'var(--red)';
-    uploadBtn.textContent = 'Retry Processing';
-  } finally {
-    state.uploading = false;
-    uploadBtn.disabled = false;
-  }
-});
+  });
+}
 
 // ─── Boot ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  checkAuth();
   renderEmptyState();
   initSSE();
 });

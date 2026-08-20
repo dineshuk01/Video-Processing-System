@@ -1,12 +1,33 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { videoService } from '../services/video/videoService';
 import { ResponseHandler } from '../utils/responseHandler';
+import { adminAuthMiddleware } from '../middleware/auth';
 
 const router = Router();
 
-// 1. POST /api/upload/initiate
+// 0. POST /api/admin/login — Validate admin password from .env
+router.post(
+  '/admin/login',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { password } = req.body;
+      const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
+
+      if (!password || password !== adminPassword) {
+        return ResponseHandler.error(res, 'Incorrect admin password', 401, 'INVALID_PASSWORD');
+      }
+
+      return ResponseHandler.success(res, { message: 'Authentication successful', token: adminPassword }, 200);
+    } catch (err: any) {
+      next(err);
+    }
+  }
+);
+
+// 1. POST /api/upload/initiate (Protected)
 router.post(
   '/initiate',
+  adminAuthMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { filename, contentType, fileSize } = req.body;
@@ -29,9 +50,10 @@ router.post(
   }
 );
 
-// 2. POST /api/upload/complete
+// 2. POST /api/upload/complete (Protected)
 router.post(
   '/complete',
+  adminAuthMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { videoId } = req.body;
@@ -48,7 +70,7 @@ router.post(
   }
 );
 
-// 3. GET /api/videos (with pagination)
+// 3. GET /api/videos (with pagination) — Public
 router.get(
   '/',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -70,7 +92,7 @@ router.get(
   }
 );
 
-// 4. GET /api/videos/:id — fetch a single video record
+// 4. GET /api/videos/:id — fetch a single video record — Public
 router.get(
   '/:id',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -87,9 +109,10 @@ router.get(
   }
 );
 
-// 5. DELETE /api/videos/:id — delete a video and its resources
+// 5. DELETE /api/videos/:id — delete a video (Protected)
 router.delete(
   '/:id',
+  adminAuthMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
@@ -105,4 +128,3 @@ router.delete(
 );
 
 export default router;
-
