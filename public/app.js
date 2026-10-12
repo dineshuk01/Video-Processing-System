@@ -158,7 +158,7 @@
     };
   }
 
-  // ─── System health (sidebar footer + settings page) ────────
+  // ─── System health (shown on the Settings page) ────────────
   VF.refreshHealth = async function refreshHealth() {
     try {
       const [basic, detailed] = await Promise.all([
@@ -171,14 +171,6 @@
     }
     store.emit('health');
   };
-
-  function renderSystem() {
-    const h = store.health;
-    const sys = document.getElementById('sys');
-    sys.dataset.state = !h ? 'checking' : h.ok ? 'ok' : 'bad';
-    document.getElementById('sys-label').textContent = !h ? 'Checking…' : h.ok ? 'System Online' : 'System Degraded';
-    document.getElementById('sys-detail').textContent = !h || !h.provider ? '' : h.provider === 'aws' ? 'S3 | ECS | SQS | FFmpeg' : 'Local | FFmpeg';
-  }
 
   function renderConnection() {
     const el = document.getElementById('conn');
@@ -335,7 +327,6 @@
     document.getElementById('scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
 
     store.subscribe((types) => {
-      if (types.has('health')) renderSystem();
       if (types.has('connection')) renderConnection();
       if (types.has('notifications')) renderBell();
       if (types.has('videos') || types.has('uploads')) renderBadges();
@@ -343,7 +334,6 @@
 
     window.addEventListener('hashchange', navigate);
     renderConnection();
-    renderSystem();
     renderBell();
     initSSE();
     VF.refreshHealth();

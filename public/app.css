@@ -91,12 +91,6 @@ code { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-siz
 .nav-soon { margin-left: auto; font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.1rem 0.4rem; border-radius: 999px; background: rgba(255,255,255,0.1); }
 .nav-badge { margin-left: auto; min-width: 20px; padding: 0 0.4rem; text-align: center; font-size: 0.7rem; font-weight: 700; line-height: 20px; border-radius: 999px; background: var(--primary); color: #fff; }
 
-.sys { margin-top: auto; padding: 0.75rem; border-radius: 10px; background: var(--sidebar-2); font-size: 0.75rem; }
-.sys-state { display: flex; align-items: center; gap: 0.5rem; color: #cbd5e1; font-weight: 600; }
-.sys-dot { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; }
-.sys[data-state="ok"] .sys-dot { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
-.sys[data-state="bad"] .sys-dot { background: #ef4444; }
-.sys-detail { margin-top: 0.15rem; color: #7f8cab; }
 
 /* ─── Topbar ───────────────────────────────────────────────── */
 .topbar {
