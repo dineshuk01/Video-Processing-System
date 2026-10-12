@@ -481,3 +481,13 @@ textarea.input { height: auto; padding: 0.6rem 0.75rem; resize: vertical; font: 
 .series-slot label { font-size: 0.78rem; font-weight: 600; }
 .series-slot .input { width: 100%; }
 .opt-label-sm { margin-top: 0.7rem; font-size: 0.82rem; font-weight: 600; }
+
+/* ─── Thumbnails ───────────────────────────────────────────── */
+.thumb-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.thumb-preview { width: 176px; aspect-ratio: 16 / 9; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-2); border: 1px solid var(--border); flex-shrink: 0; display: grid; place-items: center; }
+.thumb-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-none { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; color: var(--text-3); font-size: 0.72rem; }
+.thumb-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+.series-poster { width: 168px; aspect-ratio: 16 / 9; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-2); border: 1px solid var(--border); flex-shrink: 0; display: grid; place-items: center; }
+.series-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+@media (max-width: 640px) { .series-poster { width: 100%; } }

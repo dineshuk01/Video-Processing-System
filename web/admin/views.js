@@ -78,6 +78,19 @@
     return json.data;
   }
 
+  // Sends an image file as the raw request body (the server checks what it really is)
+  async function sendImage(path, file) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('Choose a JPEG, PNG or WebP image');
+    if (file.size > 8 * 1024 * 1024) throw new Error('That image is over 8 MB');
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': file.type }, body: file });
+    const json = await res.json().catch(() => null);
+    if (!json || !json.success) throw new Error(json?.error?.message || `Upload failed (HTTP ${res.status})`);
+    return json.data;
+  }
+
+  // The picture inside a thumbnail box, or a placeholder when there is none yet
+  const previewHtml = (url) => (url ? `<img src="${esc(url)}" alt="Current thumbnail" />` : `<span class="thumb-none">${icon('film', 22)}<span>No thumbnail yet</span></span>`);
+
   // ─── Actions ───────────────────────────────────────────────
   async function deleteVideo(id) {
     const video = store.videos[id];
@@ -103,7 +116,7 @@
   async function setPublished(id, published) {
     try {
       const video = await api(`/api/admin/videos/${encodeURIComponent(id)}/publish`, { method: 'POST', body: { published } });
-      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...video } };
+      store.videos = { ...store.videos, [id]: video };
       store.emit('videos');
       VF.refreshOverview();
       toast(published ? 'Published to the public site' : 'Unpublished. It is now a draft.', 'success', 2500);
@@ -117,7 +130,7 @@
   async function retryVideo(id, qualities) {
     try {
       const video = await api(`/api/admin/videos/${encodeURIComponent(id)}/retry`, { method: 'POST', body: qualities ? { qualities } : {} });
-      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...video } };
+      store.videos = { ...store.videos, [id]: video };
       store.emit('videos');
       VF.refreshOverview();
       toast('Queued for processing again', 'success', 2500);
@@ -144,7 +157,7 @@
     if (!ok) return false;
     try {
       const updated = await api(`/api/admin/videos/${encodeURIComponent(id)}/pause`, { method: 'POST' });
-      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
+      store.videos = { ...store.videos, [id]: updated };
       store.emit('videos');
       VF.refreshOverview();
       toast('Paused. Processing is stopping.', 'success', 2500);
@@ -167,7 +180,7 @@
     if (!ok) return false;
     try {
       const updated = await api(`/api/admin/videos/${encodeURIComponent(id)}/delete-processed`, { method: 'POST' });
-      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
+      store.videos = { ...store.videos, [id]: updated };
       store.emit('videos');
       VF.refreshOverview();
       toast('Processed files deleted. The original is kept.', 'success', 3000);
@@ -253,11 +266,21 @@
           <label class="field"><span>Title</span>
             <input class="input" name="title" maxlength="120" value="${esc(v.title || '')}" placeholder="${esc(v.originalName)}" />
             <small>Shown on the public site. Leave empty to use the file name.</small></label>
+          <div class="field thumb-field"><span>Thumbnail</span>
+            <div class="thumb-row">
+              <div class="thumb-preview" id="thumb-preview">${previewHtml(v.thumbnailUrl)}</div>
+              <div class="thumb-actions">
+                <button type="button" class="btn btn-ghost btn-sm" id="thumb-upload">${icon('upload', 14)} Upload image</button>
+                <button type="button" class="btn btn-ghost btn-sm ${v.customThumbnailKey ? '' : 'hidden'}" id="thumb-reset">Use the automatic one</button>
+                <input type="file" id="thumb-file" accept="image/jpeg,image/png,image/webp" hidden />
+              </div>
+            </div>
+            <small>JPEG, PNG or WebP, up to 8 MB. To use a frame from the video instead, open its preview, pause on the frame and press <strong>Use this frame as thumbnail</strong>.</small></div>
           <fieldset class="field"><legend>Output qualities</legend>
             ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" ${selected.includes(q) ? 'checked' : ''} /> ${q}p${reachesClass(v, q) ? '' : ' <span class="muted">— larger than the source, needs upscaling</span>'}</label>`).join('')}
             <small>Applied the next time this video is processed.${v.metadata ? ` The source is ${esc(v.metadata.width)}×${esc(v.metadata.height)}.` : ''}</small></fieldset>
           <label class="check"><input type="checkbox" name="allowUpscale" ${v.allowUpscale ? 'checked' : ''} /> Also create sizes larger than the source</label>
-          <small class="muted">Upscaled sizes add no real detail, take longer to encode and use more storage.</small>
+          <small class="muted-text">Upscaled sizes add no real detail, take longer to encode and use more storage.</small>
           <label class="check"><input type="checkbox" name="autoPublish" ${v.autoPublish ? 'checked' : ''} /> Publish automatically when processing finishes</label>
           <div class="alert-box hidden" id="edit-error"></div>
           <div class="modal-actions">
@@ -270,6 +293,37 @@
     const form = modal.el.querySelector('#edit-form');
     const errBox = modal.el.querySelector('#edit-error');
     if (focusTitle) { form.title.focus(); form.title.select(); }
+
+    // Thumbnail changes apply straight away; they don't wait for Save
+    const preview = modal.el.querySelector('#thumb-preview');
+    const fileInput = modal.el.querySelector('#thumb-file');
+    const resetBtn = modal.el.querySelector('#thumb-reset');
+    const showThumb = (updated) => {
+      store.videos = { ...store.videos, [id]: updated };
+      store.emit('videos');
+      preview.innerHTML = previewHtml(store.videos[id].thumbnailUrl);
+      resetBtn.classList.toggle('hidden', !store.videos[id].customThumbnailKey);
+    };
+    modal.el.querySelector('#thumb-upload').addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      try {
+        showThumb(await sendImage(`/api/admin/videos/${encodeURIComponent(id)}/thumbnail`, file));
+        toast('Thumbnail updated', 'success', 2200);
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+    resetBtn.addEventListener('click', async () => {
+      try {
+        showThumb(await api(`/api/admin/videos/${encodeURIComponent(id)}/thumbnail`, { method: 'DELETE' }));
+        toast('Using the automatic thumbnail', 'success', 2200);
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
     const read = () => ({
       title: form.title.value.trim(),
       qualities: [...form.querySelectorAll('input[name="quality"]:checked')].map((el) => Number(el.value)),
@@ -282,7 +336,7 @@
       if (values.qualities.length === 0) { errBox.textContent = 'Choose at least one quality.'; errBox.classList.remove('hidden'); return; }
       try {
         const updated = await api(`/api/admin/videos/${encodeURIComponent(id)}`, { method: 'PATCH', body: values });
-        store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
+        store.videos = { ...store.videos, [id]: updated };
         store.emit('videos');
         if (reprocess) await retryVideo(id, values.qualities);
         else if (values.title !== (v.title || '')) toast('Renamed. The new title shows on the public site within a few seconds.', 'success', 3500);
@@ -893,6 +947,7 @@
             <span id="vis-pill">${visibilityPill(video)}</span>
             <button class="btn btn-ghost btn-sm" id="pub-btn">${video.published ? 'Unpublish' : 'Publish to public site'}</button>
             <button class="btn btn-ghost btn-sm" id="edit-btn">Rename &amp; settings</button>
+            <button class="btn btn-ghost btn-sm" id="frame-btn" title="Pause on the frame you want, then press this">${icon('film', 14)} Use this frame as thumbnail</button>
           </div>
 
           <div class="controls-bar">
@@ -1021,6 +1076,23 @@
       }
     });
     $('#edit-btn').addEventListener('click', () => openEditDialog(video.id, { focusTitle: true }));
+
+    // Take the thumbnail from the frame the player is showing (the server reads it from the original file)
+    $('#frame-btn').addEventListener('click', async (e) => {
+      const button = e.currentTarget;
+      const at = videoEl.currentTime;
+      button.disabled = true;
+      try {
+        const updated = await api(`/api/admin/videos/${encodeURIComponent(video.id)}/thumbnail/frame`, { method: 'POST', body: { seconds: at } });
+        store.videos = { ...store.videos, [video.id]: updated };
+        store.emit('videos');
+        toast(`Thumbnail set from ${formatDuration(at)}`, 'success', 2600);
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     // A rename made in the dialog shows in the preview straight away
     const unsubTitle = store.subscribe((t) => {
@@ -1164,5 +1236,5 @@
 
   // Exposed so the job dialog can be opened from the row menu, and for the series pages (series.js)
   VF.openJobDialog = openJobDialog;
-  VF.admin = { api, pill, titleOf, thumb, durationOf, qualityOf, setPublished, rowMenu, retryVideo, deleteVideo, openEditDialog, openJobDialog, visibilityPill, phaseOf };
+  VF.admin = { api, sendImage, previewHtml, pill, titleOf, thumb, durationOf, qualityOf, setPublished, rowMenu, retryVideo, deleteVideo, openEditDialog, openJobDialog, visibilityPill, phaseOf };
 })();

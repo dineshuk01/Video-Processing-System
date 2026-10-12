@@ -6,6 +6,7 @@ import { ResponseHandler } from '../utils/responseHandler';
 import { isAdminRequest } from '../middleware/adminAuth';
 import { dbService } from '../services/db/dbService';
 import { videoService } from '../services/video/videoService';
+import { seriesService } from '../services/series/seriesService';
 import { getPublishedCache, setPublishedCache } from '../services/video/publishedCache';
 
 const router = Router();
@@ -13,8 +14,15 @@ const router = Router();
 async function isPublishedVideo(id: string): Promise<boolean> {
   const cached = getPublishedCache(id);
   if (cached !== undefined) return cached;
-  const video = await dbService.getVideo(id);
-  const ok = !!video && (await videoService.isVisible(video));
+  let ok: boolean;
+  if (id.startsWith('series_')) {
+    // A series poster is public while the series is published
+    const series = await seriesService.get(id.slice('series_'.length));
+    ok = !!series && series.published;
+  } else {
+    const video = await dbService.getVideo(id);
+    ok = !!video && (await videoService.isVisible(video));
+  }
   setPublishedCache(id, ok);
   return ok;
 }
@@ -175,7 +183,7 @@ router.get(
       // unpublished videos are admin-only, and look "not found" to everyone else.
       if (!isAdminRequest(req)) {
         const publicBucket = process.env.LOCAL_S3_PUBLIC_BUCKET;
-        const match = bucket === publicBucket ? /^processed\/([^/]+)\//.exec(key) : null;
+        const match = bucket === publicBucket ? /^(?:processed|thumbnails)\/([^/]+)\//.exec(key) : null;
         if (!match || !(await isPublishedVideo(match[1]))) {
           return ResponseHandler.error(res, `Object ${key} not found in bucket ${bucket}`, 404);
         }

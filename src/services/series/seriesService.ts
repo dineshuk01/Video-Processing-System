@@ -125,6 +125,16 @@ export const seriesService = {
     });
   },
 
+  async setPoster(id: string, posterKey: string | undefined): Promise<Series> {
+    return getStore().transaction((items) => {
+      const series = items.find((s) => s.id === id);
+      if (!series) throw notFound(id);
+      series.posterKey = posterKey;
+      series.updatedAt = new Date().toISOString();
+      return { result: { ...series }, write: true };
+    });
+  },
+
   async delete(id: string): Promise<void> {
     await getStore().transaction((items) => {
       const index = items.findIndex((s) => s.id === id);

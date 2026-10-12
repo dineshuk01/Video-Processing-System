@@ -5,7 +5,8 @@ import { getQueueService } from '../services/queue/queueService';
 import { getStorageService } from '../services/storage/storageService';
 import { getComputeStatus } from '../services/compute/computeStatus';
 import { ResponseHandler } from '../utils/responseHandler';
-import { withoutEvents } from '../utils/videoView';
+import { summary } from '../utils/videoView';
+import { imageBody } from '../middleware/imageBody';
 import { VideoStatus } from '../types';
 
 // Everything here is mounted behind requireAdmin (see index.ts)
@@ -133,7 +134,7 @@ router.post('/videos/:id/publish', async (req: Request, res: Response, next: Nex
       return ResponseHandler.error(res, 'published must be true or false', 400, 'INVALID_BODY');
     }
     const video = await videoService.setPublished(req.params.id, req.body.published);
-    return ResponseHandler.success(res, withoutEvents(video));
+    return ResponseHandler.success(res, summary(video));
   } catch (err) {
     next(err);
   }
@@ -143,7 +144,7 @@ router.patch('/videos/:id', async (req: Request, res: Response, next: NextFuncti
   try {
     const { title, qualities, autoPublish, allowUpscale } = req.body || {};
     const video = await videoService.updateSettings(req.params.id, { title, qualities, autoPublish, allowUpscale });
-    return ResponseHandler.success(res, withoutEvents(video));
+    return ResponseHandler.success(res, summary(video));
   } catch (err) {
     next(err);
   }
@@ -153,7 +154,7 @@ router.patch('/videos/:id', async (req: Request, res: Response, next: NextFuncti
 router.post('/videos/:id/series', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { seriesId, seasonNumber, episodeNumber } = req.body || {};
-    return ResponseHandler.success(res, withoutEvents(await videoService.assignEpisode(req.params.id, { seriesId, seasonNumber, episodeNumber })));
+    return ResponseHandler.success(res, summary(await videoService.assignEpisode(req.params.id, { seriesId, seasonNumber, episodeNumber })));
   } catch (err) {
     next(err);
   }
@@ -162,7 +163,32 @@ router.post('/videos/:id/series', async (req: Request, res: Response, next: Next
 // Take a video out of its series; it becomes a standalone draft
 router.delete('/videos/:id/series', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return ResponseHandler.success(res, withoutEvents(await videoService.detachEpisode(req.params.id)));
+    return ResponseHandler.success(res, summary(await videoService.detachEpisode(req.params.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Thumbnails: upload an image, take a frame from the video, or go back to the automatic one
+router.post('/videos/:id/thumbnail', imageBody, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, summary(await videoService.setThumbnailFromImage(req.params.id, req.body as Buffer)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/videos/:id/thumbnail/frame', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, summary(await videoService.setThumbnailFromFrame(req.params.id, req.body?.seconds)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/videos/:id/thumbnail', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, summary(await videoService.resetThumbnail(req.params.id)));
   } catch (err) {
     next(err);
   }
@@ -170,7 +196,7 @@ router.delete('/videos/:id/series', async (req: Request, res: Response, next: Ne
 
 router.post('/videos/:id/pause', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return ResponseHandler.success(res, withoutEvents(await videoService.pauseVideo(req.params.id)));
+    return ResponseHandler.success(res, summary(await videoService.pauseVideo(req.params.id)));
   } catch (err) {
     next(err);
   }
@@ -183,7 +209,7 @@ router.post('/videos/:id/resume', async (req: Request, res: Response, next: Next
     if (video && video.status !== VideoStatus.PAUSED) {
       return ResponseHandler.error(res, 'Only paused videos can be resumed', 409, 'NOT_PAUSED');
     }
-    return ResponseHandler.success(res, withoutEvents(await videoService.retryVideo(req.params.id, { qualities: req.body?.qualities })));
+    return ResponseHandler.success(res, summary(await videoService.retryVideo(req.params.id, { qualities: req.body?.qualities })));
   } catch (err) {
     next(err);
   }
@@ -192,7 +218,7 @@ router.post('/videos/:id/resume', async (req: Request, res: Response, next: Next
 // Delete only the processed output; the original upload stays so it can be processed again
 router.post('/videos/:id/delete-processed', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return ResponseHandler.success(res, withoutEvents(await videoService.deleteProcessed(req.params.id)));
+    return ResponseHandler.success(res, summary(await videoService.deleteProcessed(req.params.id)));
   } catch (err) {
     next(err);
   }
@@ -201,7 +227,7 @@ router.post('/videos/:id/delete-processed', async (req: Request, res: Response, 
 router.post('/videos/:id/retry', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const video = await videoService.retryVideo(req.params.id, { qualities: req.body?.qualities });
-    return ResponseHandler.success(res, withoutEvents(video));
+    return ResponseHandler.success(res, summary(video));
   } catch (err) {
     next(err);
   }

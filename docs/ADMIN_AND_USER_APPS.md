@@ -70,6 +70,16 @@ Every video row in the admin *Videos* and *Processing Jobs* pages has **Pause** 
 - **Delete** works at any stage. On a queued or processing video it stops the job first ("Stop & delete"), then removes the original and every processed file. A stopped job is not counted as a failure and is not retried.
 - **Delete processed files** removes only the streaming output of a finished, failed or paused video. The video leaves the public site and becomes *Paused* with its original kept, so you can process it again with **Resume**. It is refused if the original upload is gone (use Delete instead).
 
+## Thumbnails
+
+Each video gets an automatic thumbnail (a frame from 2 seconds in). An admin can change it three ways:
+
+- **Upload an image** — *Videos → ⋯ → Edit settings → Thumbnail → Upload image*. JPEG, PNG or WebP up to 8 MB. Whatever the format, it is stored as a JPEG no wider than 1280 px. The file's real type is checked, not just its name.
+- **Use a frame from the video** — open the video's preview, pause on the frame you want and press **Use this frame as thumbnail**. The server reads that frame from the original upload, so it is full quality.
+- **Use the automatic one** — resets a custom thumbnail.
+
+A custom thumbnail is kept separately from the automatic one, so it survives reprocessing and "Delete processed files". It is removed when the video is deleted. The same Upload / reset options exist for a **series poster** (*Series → Edit details*); without one, a series uses its first episode's thumbnail. Visibility follows the video: a custom thumbnail is public only while its video (or series) is.
+
 ## Series, seasons and episodes
 
 Admin → **Series**. Create a series (title and description), and it starts with *Season 1*. Add more seasons with **Add a season** (0 is for specials). Episodes are ordinary videos with a series, season and episode number, so everything else (processing, qualities, rename, pause, retry) works the same.

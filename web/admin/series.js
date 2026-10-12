@@ -24,7 +24,7 @@
 
   // Updates one video in the live list from an API response (attribute changes don't arrive by themselves)
   function mergeVideo(video) {
-    store.videos = { ...store.videos, [video.id]: { ...store.videos[video.id], ...video } };
+    store.videos = { ...store.videos, [video.id]: video };
     store.emit('videos');
   }
 
@@ -44,12 +44,57 @@
       html: `<form class="edit-form" id="series-form">
           ${field('Title', `<input class="input" name="title" maxlength="120" required value="${esc(series ? series.title : '')}" placeholder="e.g. Midnight Garden" />`)}
           ${field('Description', `<textarea class="input" name="description" rows="4" maxlength="2000" placeholder="A short summary shown on the series page">${esc(series ? series.description || '' : '')}</textarea>`, 'Shown on the public series page.')}
+          ${editing ? `<div class="field thumb-field"><span>Poster</span>
+            <div class="thumb-row">
+              <div class="thumb-preview" id="poster-preview">${A().previewHtml(series.posterUrl)}</div>
+              <div class="thumb-actions">
+                <button type="button" class="btn btn-ghost btn-sm" id="poster-upload">${icon('upload', 14)} Upload image</button>
+                <button type="button" class="btn btn-ghost btn-sm ${series.posterKey ? '' : 'hidden'}" id="poster-reset">Use the first episode's</button>
+                <input type="file" id="poster-file" accept="image/jpeg,image/png,image/webp" hidden />
+              </div>
+            </div>
+            <small>JPEG, PNG or WebP, up to 8 MB. Without one, the first episode's thumbnail is used.</small></div>` : ''}
           ${errorBox}
           <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button>
             <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Create series'}</button></div></form>`,
     });
     const form = modal.el.querySelector('#series-form');
     form.title.focus();
+
+    // Poster changes apply straight away
+    if (editing) {
+      const preview = modal.el.querySelector('#poster-preview');
+      const fileInput = modal.el.querySelector('#poster-file');
+      const resetBtn = modal.el.querySelector('#poster-reset');
+      const refresh = async () => {
+        await VF.refreshSeries();
+        const latest = seriesById(series.id);
+        preview.innerHTML = A().previewHtml(latest && latest.posterUrl);
+        resetBtn.classList.toggle('hidden', !(latest && latest.posterKey));
+      };
+      modal.el.querySelector('#poster-upload').addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files[0];
+        fileInput.value = '';
+        if (!file) return;
+        try {
+          await A().sendImage(`/api/admin/series/${encodeURIComponent(series.id)}/poster`, file);
+          await refresh();
+          toast('Poster updated', 'success', 2200);
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+      resetBtn.addEventListener('click', async () => {
+        try {
+          await A().api(`/api/admin/series/${encodeURIComponent(series.id)}/poster`, { method: 'DELETE' });
+          await refresh();
+          toast('Using the first episode\'s thumbnail', 'success', 2200);
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+    }
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
@@ -246,6 +291,7 @@
   // Series list
   // ═════════════════════════════════════════════════════════
   function mountList(root) {
+    VF.refreshSeries(); // opening the page always shows the current list, not the last background refresh
     root.innerHTML = `
       <div class="page-head page-head-actions"><div><h1>Series</h1><p>Organise episodes into seasons and publish whole series.</p></div>
         <button class="btn btn-primary" id="new-series">${icon('tv', 16)} New series</button></div>
@@ -298,6 +344,7 @@
   // One series: seasons and episodes
   // ═════════════════════════════════════════════════════════
   function mountDetail(root, id) {
+    VF.refreshSeries();
     function episodeRow(v) {
       const publishable = v.status === 'COMPLETED';
       return `<tr>
@@ -328,6 +375,7 @@
       root.innerHTML = `
         <a class="back-link" href="#/series">${icon('back', 16)} All series</a>
         <section class="card series-head">
+          <div class="series-poster">${A().previewHtml(series.posterUrl)}</div>
           <div class="series-head-main">
             <h1>${esc(series.title)}</h1>
             <p class="muted-text">${esc(series.description || 'No description yet. Add one with Edit details.')}</p>

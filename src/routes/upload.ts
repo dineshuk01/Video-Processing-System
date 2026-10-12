@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { videoService } from '../services/video/videoService';
 import { ResponseHandler } from '../utils/responseHandler';
-import { withoutEvents } from '../utils/videoView';
+import { summary } from '../utils/videoView';
 
 // Admin-only: mounted at /api/admin/upload and /api/admin/videos behind requireAdmin
 const router = Router();
@@ -43,7 +43,7 @@ router.post(
       }
 
       const result = await videoService.completeUpload(videoId);
-      return ResponseHandler.success(res, withoutEvents(result), 200);
+      return ResponseHandler.success(res, summary(result), 200);
     } catch (err: any) {
       next(err);
     }
@@ -63,7 +63,7 @@ router.get(
       limit = Math.min(limit, 200);
 
       const result = await videoService.getVideos(page, limit);
-      return ResponseHandler.success(res, { ...result, videos: result.videos.map(withoutEvents) }, 200);
+      return ResponseHandler.success(res, { ...result, videos: result.videos.map(summary) }, 200);
     } catch (err: any) {
       next(err);
     }

@@ -8,6 +8,8 @@ import { HttpError } from '../../utils/responseHandler';
 import { cdnService } from '../cdn/cdnService';
 import { clearPublishedCache } from './publishedCache';
 import { seriesService, parseSeasonNumber, parseEpisodeNumber } from '../series/seriesService';
+import { publicUrlFor } from '../storage/publicUrl';
+import * as thumbs from '../thumbnail/thumbnailService';
 
 // What the public site may know about a video. Nothing about jobs, errors, storage keys or sizes.
 export interface PublicVideo {
@@ -338,7 +340,18 @@ export class VideoService {
     return updated;
   }
 
+  // The video as a client should see it: CDN addresses, and the admin's own thumbnail if one was set
   private applyCdnUrls(video: VideoRecord): VideoRecord {
+    const withCdn = this.withCdnUrls(video);
+    return video.customThumbnailKey ? { ...withCdn, thumbnailUrl: publicUrlFor(video.customThumbnailKey) } : withCdn;
+  }
+
+  /** Same as above, for code outside this class (live updates) */
+  present(video: VideoRecord): VideoRecord {
+    return this.applyCdnUrls(video);
+  }
+
+  private withCdnUrls(video: VideoRecord): VideoRecord {
     if (!cdnService.isEnabled()) {
       return video;
     }
@@ -402,10 +415,87 @@ export class VideoService {
       Logger.warn(`Failed to delete processed directory for video ${id}`, err.message);
     }
 
-    // 3. Delete from DB
+    // 3. Delete the admin's custom thumbnail, if any
+    await thumbs.removeAllThumbnails(id);
+
+    // 4. Delete from DB
     await dbService.deleteVideo(id);
     clearPublishedCache(id);
     Logger.info(`Successfully deleted video ${id} and all associated resources`);
+  }
+
+  // ─── Thumbnails ────────────────────────────────────────────
+
+  private async requireVideo(id: string): Promise<VideoRecord> {
+    const video = await dbService.getVideo(id);
+    if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
+    return video;
+  }
+
+  // Replace the thumbnail with an uploaded image (JPEG, PNG or WebP)
+  async setThumbnailFromImage(id: string, image: Buffer): Promise<VideoRecord> {
+    const video = await this.requireVideo(id);
+    const key = await thumbs.storeThumbnail(id, await thumbs.imageToJpeg(image));
+    const updated = await dbService.updateVideo(id, { customThumbnailKey: key });
+    await thumbs.removeThumbnail(video.customThumbnailKey);
+    await dbService.appendEvent(id, 'info', 'Thumbnail replaced by an admin (uploaded image)');
+    return this.applyCdnUrls(updated);
+  }
+
+  // Use a frame of the original upload (at `seconds`) as the thumbnail
+  async setThumbnailFromFrame(id: string, seconds: unknown): Promise<VideoRecord> {
+    const video = await this.requireVideo(id);
+    const at = Number(seconds);
+    if (!Number.isFinite(at) || at < 0) throw new HttpError('seconds must be a number of 0 or more', 400, 'INVALID_TIME');
+    const duration = video.metadata?.duration || 0;
+    if (duration && at > duration) throw new HttpError(`That is past the end of the video (${Math.floor(duration)} s)`, 400, 'INVALID_TIME');
+
+    const storage = getStorageService();
+    if (!video.rawObjectKey || !(await storage.fileExists(this.buckets.temp, video.rawObjectKey))) {
+      throw new HttpError('The original upload is gone, so a frame can\'t be taken. Upload an image instead.', 409, 'NO_SOURCE');
+    }
+    // Local: read the file in place. AWS: let FFmpeg read just what it needs over a presigned URL.
+    const input = process.env.PROVIDER === 'aws'
+      ? await storage.getSignedUrl(this.buckets.temp, video.rawObjectKey, 'download')
+      : path.join(path.resolve(process.env.LOCAL_DATA_DIR || './data'), this.buckets.temp, video.rawObjectKey);
+
+    const key = await thumbs.storeThumbnail(id, await thumbs.frameToJpeg(input, at));
+    const updated = await dbService.updateVideo(id, { customThumbnailKey: key });
+    await thumbs.removeThumbnail(video.customThumbnailKey);
+    await dbService.appendEvent(id, 'info', `Thumbnail set by an admin (frame at ${at.toFixed(1)} s)`);
+    return this.applyCdnUrls(updated);
+  }
+
+  // Back to the automatic thumbnail
+  async resetThumbnail(id: string): Promise<VideoRecord> {
+    const video = await this.requireVideo(id);
+    if (!video.customThumbnailKey) return this.applyCdnUrls(video);
+    const updated = await dbService.updateVideo(id, { customThumbnailKey: undefined });
+    await thumbs.removeThumbnail(video.customThumbnailKey);
+    await dbService.appendEvent(id, 'info', 'Thumbnail reset to the automatic one');
+    return this.applyCdnUrls(updated);
+  }
+
+  // The poster a series shows: the admin's own, else the first episode's thumbnail
+  seriesPosterUrl(series: Series, episodes: VideoRecord[]): string | undefined {
+    if (series.posterKey) return publicUrlFor(series.posterKey);
+    return episodes.map((e) => this.applyCdnUrls(e)).find((e) => e.thumbnailUrl)?.thumbnailUrl;
+  }
+
+  async setSeriesPoster(id: string, image: Buffer): Promise<Series> {
+    const series = await seriesService.require(id);
+    const key = await thumbs.storeThumbnail(`series_${id}`, await thumbs.imageToJpeg(image));
+    const updated = await seriesService.setPoster(id, key);
+    await thumbs.removeThumbnail(series.posterKey);
+    return updated;
+  }
+
+  async resetSeriesPoster(id: string): Promise<Series> {
+    const series = await seriesService.require(id);
+    if (!series.posterKey) return series;
+    const updated = await seriesService.setPoster(id, undefined);
+    await thumbs.removeThumbnail(series.posterKey);
+    return updated;
   }
 
   // ─── Series / episodes ─────────────────────────────────────
@@ -471,6 +561,7 @@ export class VideoService {
       if (deleteVideos) await this.deleteVideo(episode.id);
       else await this.detachEpisode(episode.id);
     }
+    await thumbs.removeAllThumbnails(`series_${id}`);
     await seriesService.delete(id);
     clearPublishedCache();
   }
@@ -534,7 +625,7 @@ export class VideoService {
       id: series.id,
       title: series.title,
       description: series.description,
-      posterUrl: ordered.length ? this.toPublic(ordered.find((e) => e.thumbnailUrl) || ordered[0]).thumbnailUrl : undefined,
+      posterUrl: series.posterKey ? publicUrlFor(series.posterKey) : ordered.length ? this.toPublic(ordered.find((e) => e.thumbnailUrl) || ordered[0]).thumbnailUrl : undefined,
       seasonCount: seasons.length,
       episodeCount: ordered.length,
       seasons,

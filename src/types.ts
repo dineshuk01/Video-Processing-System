@@ -38,6 +38,7 @@ export interface VideoRecord {
   qualities?: number[];            // renditions to generate; all when omitted
   allowUpscale?: boolean;          // also make sizes larger than the source (no extra detail, bigger files)
   renditions?: string[];           // what processing actually produced, e.g. ['360p', '480p']
+  customThumbnailKey?: string;     // an admin-chosen thumbnail (key in the public bucket); wins over thumbnailUrl
   seriesId?: string;               // set when this video is an episode of a series
   seasonNumber?: number;
   episodeNumber?: number;
@@ -64,6 +65,7 @@ export interface Series {
   id: string;
   title: string;
   description?: string;
+  posterKey?: string;       // an admin-chosen poster (key in the public bucket); otherwise the first episode's thumbnail
   published: boolean;       // an unpublished series hides all of its episodes from the public site
   publishedAt?: string;
   seasons: number[];        // season numbers, including ones that have no episodes yet
