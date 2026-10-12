@@ -152,6 +152,21 @@ function runFfmpeg(args: string[], onTime?: (seconds: number) => void): Promise<
   });
 }
 
+// Time of the first audio packet, or null when there is no audio. Some files declare audio from 0 s
+// but only carry it from much later (e.g. an intro with no sound track); the container does not say.
+function probeAudioStart(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffprobeBin, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', '-read_intervals', '%+#1', filePath]);
+    let out = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.on('error', () => resolve(null));
+    proc.on('close', () => {
+      const t = parseFloat(out.split(/\r?\n/)[0]);
+      resolve(Number.isFinite(t) ? t : null);
+    });
+  });
+}
+
 // ─── FFprobe: Probe source video metadata ─────────────────────
 function probeVideo(filePath: string): Promise<VideoMetadata> {
   return new Promise((resolve, reject) => {
@@ -263,6 +278,13 @@ async function executeTranscoding() {
     await dbService.updateVideo(videoId, { metadata, progress: 8 });
     await log('info', `Source: ${metadata.width}x${metadata.height}, ${metadata.codec}, ${metadata.fps} fps, ${metadata.duration.toFixed(1)}s`);
 
+    // If the audio starts late, the HLS segments before it would have no audio at all, which browsers
+    // cannot play ("bufferAppendError"). The encoder pads that stretch with silence instead (see -af below).
+    const audioStart = await probeAudioStart(inputFilePath);
+    if (audioStart !== null && audioStart > 0.5) {
+      await log('warn', `The audio only starts ${audioStart.toFixed(1)} s into the video. Silence is added before it so the stream plays in every browser.`);
+    }
+
     // Step C: Decide which renditions to make.
     const srcW = metadata.width || 1920;
     const srcH = metadata.height || 1080;
@@ -339,6 +361,7 @@ async function executeTranscoding() {
         '-preset', x264Preset,
         '-pix_fmt', 'yuv420p', // 8-bit: browsers cannot play 10-bit H.264 ("High 10"), which 10-bit sources produce by default
         '-b:v', v.videoBitrate,
+        '-af', 'aresample=async=1:first_pts=0', // silence from 0 s up to where the audio really starts
         '-c:a', 'aac',
         '-ac', '2',
         '-b:a', v.audioBitrate,
