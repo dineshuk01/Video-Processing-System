@@ -5,7 +5,7 @@
 variable "aws_region" {
   description = "AWS region for all resources"
   type        = string
-  default     = "us-east-1"
+  default     = "ap-south-1"
 }
 
 variable "project_name" {
@@ -68,38 +68,33 @@ variable "ecs_cluster_name" {
   default     = "video-processing-cluster"
 }
 
-variable "api_container_image" {
-  description = "Docker image URI for the API server container"
+variable "container_image" {
+  description = "Docker image URI used by the server (API + worker) and by the encoding task"
   type        = string
 }
 
-variable "worker_container_image" {
-  description = "Docker image URI for the background worker container"
-  type        = string
+variable "transcoder_cpu" {
+  description = "CPU units for the encoding task (4096 = 4 vCPU). More CPU = faster encoding"
+  type        = number
+  default     = 4096
 }
 
-variable "api_cpu" {
-  description = "CPU units for the API task (256 = 0.25 vCPU)"
+variable "transcoder_memory" {
+  description = "Memory (MiB) for the encoding task (4 vCPU allows 8192-30720)"
   type        = number
-  default     = 512
+  default     = 8192
 }
 
-variable "api_memory" {
-  description = "Memory (MiB) for the API task"
+variable "worker_concurrency" {
+  description = "How many videos can encode at the same time (each gets its own encoding task). Keep concurrency x transcoder vCPUs within your Fargate vCPU quota (30 by default)"
   type        = number
-  default     = 1024
+  default     = 3
 }
 
-variable "worker_cpu" {
-  description = "CPU units for the worker/transcoder task"
+variable "transcoder_disk_gib" {
+  description = "Temporary disk (GiB) for the encoding task: it must hold the source video plus every size (20-200)"
   type        = number
-  default     = 1024
-}
-
-variable "worker_memory" {
-  description = "Memory (MiB) for the worker/transcoder task"
-  type        = number
-  default     = 2048
+  default     = 100
 }
 
 variable "vpc_id" {
@@ -112,16 +107,56 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
-variable "api_desired_count" {
-  description = "Desired number of API task instances"
-  type        = number
-  default     = 1
-}
-
 # ─── CloudFront CDN ──────────────────────────────────────────────
 
 variable "enable_cdn" {
   description = "Whether to create a CloudFront distribution for the public bucket"
   type        = bool
   default     = true
+}
+
+# ─── Server ──────────────────────────────────────────────────────
+
+variable "admin_api_key" {
+  description = "Password for the admin dashboard (ADMIN_API_KEY). Stored in the server's instance data"
+  type        = string
+  sensitive   = true
+}
+
+variable "user_domain" {
+  description = "Domain for the public streaming site, e.g. watch.example.com (empty = plain HTTP on the server's address)"
+  type        = string
+  default     = ""
+}
+
+variable "admin_domain" {
+  description = "Domain for the admin dashboard, e.g. admin.example.com (empty = port 8080 on the server's address)"
+  type        = string
+  default     = ""
+}
+
+variable "admin_allowed_cidrs" {
+  description = "Addresses allowed to open the admin dashboard when it has no domain, e.g. [\"203.0.113.7/32\"] for your own IP"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 hosted zone ID. If set, the two A records are created for you; otherwise add them at your DNS provider"
+  type        = string
+  default     = ""
+}
+
+variable "max_upload_size_mb" {
+  description = "Largest upload the admin may send, in MB"
+  type        = number
+  default     = 10000
+}
+
+# ─── DynamoDB ────────────────────────────────────────────────────
+
+variable "dynamodb_table_name" {
+  description = "Name suffix of the DynamoDB table that stores video records"
+  type        = string
+  default     = "videos"
 }

@@ -1,13 +1,15 @@
-# ─────────────────────────────────────────────────────────────────
-# Video Processing System — AWS Infrastructure (Terraform)
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Video Processing System â€” AWS Infrastructure (Terraform)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # This module provisions the complete AWS backend:
-#   • S3 buckets (raw uploads + HLS public)
-#   • SQS queue + Dead Letter Queue
-#   • ECS Fargate cluster, task definitions, and services
-#   • IAM roles and policies
-#   • CloudFront CDN distribution (optional)
-# ─────────────────────────────────────────────────────────────────
+#   â€¢ S3 buckets (raw uploads + HLS public)
+#   â€¢ SQS queue + Dead Letter Queue
+#   â€¢ One small EC2 server (website, admin, queue worker)
+#   â€¢ ECS Fargate cluster + one-shot transcoder task (runs only while a video encodes)
+#   â€¢ DynamoDB table for video records
+#   â€¢ IAM roles and policies
+#   â€¢ CloudFront CDN distribution (optional)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 terraform {
   required_version = ">= 1.5.0"
@@ -32,11 +34,11 @@ provider "aws" {
   }
 }
 
-# ═════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # S3 BUCKETS
-# ═════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-# ─── Raw Upload Bucket (Temporary) ──────────────────────────────
+# â”€â”€â”€ Raw Upload Bucket (Temporary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_s3_bucket" "raw_uploads" {
   bucket = "${var.project_name}-${var.environment}-${var.raw_bucket_name}"
 }
@@ -77,7 +79,7 @@ resource "aws_s3_bucket_public_access_block" "raw_block" {
   restrict_public_buckets = true
 }
 
-# ─── Public HLS Bucket ──────────────────────────────────────────
+# â”€â”€â”€ Public HLS Bucket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_s3_bucket" "hls_public" {
   bucket = "${var.project_name}-${var.environment}-${var.public_bucket_name}"
 }
@@ -101,20 +103,20 @@ resource "aws_s3_bucket_public_access_block" "hls_block" {
   restrict_public_buckets = true
 }
 
-# ═════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # SQS QUEUES
-# ═════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-# ─── Dead Letter Queue ──────────────────────────────────────────
+# â”€â”€â”€ Dead Letter Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_sqs_queue" "transcode_dlq" {
   name                      = "${var.project_name}-${var.environment}-${var.dlq_name}"
   message_retention_seconds = 1209600 # 14 days
 }
 
-# ─── Main Transcode Queue ──────────────────────────────────────
+# â”€â”€â”€ Main Transcode Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_sqs_queue" "transcode_queue" {
   name                       = "${var.project_name}-${var.environment}-${var.queue_name}"
-  visibility_timeout_seconds = 900  # 15 minutes (transcoding can take a while)
+  visibility_timeout_seconds = 3600 # 1 hour: the worker holds the message while the transcoder task runs
   message_retention_seconds  = 86400 # 1 day
 
   redrive_policy = jsonencode({
@@ -123,11 +125,44 @@ resource "aws_sqs_queue" "transcode_queue" {
   })
 }
 
-# ═════════════════════════════════════════════════════════════════
-# IAM ROLES & POLICIES
-# ═════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# DYNAMODB (video records)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-# ─── ECS Task Execution Role (pull images, write logs) ─────────
+resource "aws_dynamodb_table" "videos" {
+  name         = "${var.project_name}-${var.environment}-${var.dynamodb_table_name}"
+  billing_mode = "PAY_PER_REQUEST" # on-demand: near-zero cost when idle
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  # Every item stores entity = "VIDEO" so this index can list all videos newest-first
+  attribute {
+    name = "entity"
+    type = "S"
+  }
+
+  attribute {
+    name = "createdAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "createdAt-index"
+    hash_key        = "entity"
+    range_key       = "createdAt"
+    projection_type = "ALL"
+  }
+}
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# IAM ROLES & POLICIES
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+# â”€â”€â”€ ECS Task Execution Role (pull images, write logs) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_iam_role" "ecs_execution_role" {
   name = "${var.project_name}-${var.environment}-ecs-execution"
 
@@ -146,7 +181,7 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ─── ECS Task Role (app-level access to S3, SQS) ──────────────
+# â”€â”€â”€ ECS Task Role (app-level access to S3, SQS) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_iam_role" "ecs_task_role" {
   name = "${var.project_name}-${var.environment}-ecs-task"
 
@@ -208,11 +243,27 @@ resource "aws_iam_policy" "app_policy" {
         ]
       },
       {
+        Sid    = "DynamoDBAccess"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          aws_dynamodb_table.videos.arn,
+          "${aws_dynamodb_table.videos.arn}/index/*"
+        ]
+      },
+      {
         Sid    = "ECSRunTask"
         Effect = "Allow"
         Action = [
           "ecs:RunTask",
           "ecs:DescribeTasks",
+          "ecs:StopTask",
           "iam:PassRole"
         ]
         Resource = ["*"]
@@ -226,124 +277,154 @@ resource "aws_iam_role_policy_attachment" "task_app_policy" {
   policy_arn = aws_iam_policy.app_policy.arn
 }
 
-# ═════════════════════════════════════════════════════════════════
-# ECS CLUSTER & TASK DEFINITIONS
-# ═════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ECS (encoding only)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Nothing runs on ECS between videos: the server's worker starts one Fargate task per video
+# (RunTask), waits for it to finish and the task then stops. You pay per second while it encodes.
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-${var.environment}-${var.ecs_cluster_name}"
+}
 
-  setting {
-    name  = "containerInsights"
-    value = "enabled"
+resource "aws_cloudwatch_log_group" "transcoder_logs" {
+  name              = "/ecs/${var.project_name}-${var.environment}/transcoder"
+  retention_in_days = 14
+}
+
+resource "aws_ecs_task_definition" "transcoder" {
+  family                   = "${var.project_name}-${var.environment}-transcoder"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.transcoder_cpu
+  memory                   = var.transcoder_memory
+  execution_role_arn       = aws_iam_role.ecs_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+
+  # The source video and every rendition are held on local disk while encoding
+  ephemeral_storage {
+    size_in_gib = var.transcoder_disk_gib
+  }
+
+  container_definitions = jsonencode([{
+    name      = "transcoder"
+    image     = var.container_image
+    essential = true
+
+    # The shared image defaults to the transcoder; stated here so it is explicit
+    entryPoint = ["node", "dist/transcoderTask.js"]
+
+    # VIDEO_ID, INPUT_*, OUTPUT_* are injected per job by the worker (RunTask overrides)
+    environment = [
+      { name = "PROVIDER",             value = "aws" },
+      { name = "AWS_REGION",           value = var.aws_region },
+      { name = "AWS_S3_TEMP_BUCKET",   value = aws_s3_bucket.raw_uploads.id },
+      { name = "AWS_S3_PUBLIC_BUCKET", value = aws_s3_bucket.hls_public.id },
+      { name = "DYNAMODB_TABLE_NAME",  value = aws_dynamodb_table.videos.name },
+      { name = "CDN_BASE_URL",         value = var.enable_cdn ? "https://${aws_cloudfront_distribution.hls_cdn[0].domain_name}" : "" },
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.transcoder_logs.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "transcoder"
+      }
+    }
+  }])
+}
+
+# Encoding tasks only reach out (S3, DynamoDB, image registry); nothing connects in
+resource "aws_security_group" "ecs_tasks" {
+  name        = "${var.project_name}-${var.environment}-ecs-sg"
+  description = "Security group for the one-shot transcoder tasks"
+  vpc_id      = var.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
   }
 }
 
-# ─── CloudWatch Log Groups ─────────────────────────────────────
-resource "aws_cloudwatch_log_group" "api_logs" {
-  name              = "/ecs/${var.project_name}-${var.environment}/api"
-  retention_in_days = 30
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# SERVER (EC2): website + admin + queue worker
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+data "aws_ssm_parameter" "al2023_ami" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
-resource "aws_cloudwatch_log_group" "worker_logs" {
-  name              = "/ecs/${var.project_name}-${var.environment}/worker"
-  retention_in_days = 30
-}
+resource "aws_iam_role" "server" {
+  name = "${var.project_name}-${var.environment}-server"
 
-# ─── API Server Task Definition ────────────────────────────────
-resource "aws_ecs_task_definition" "api" {
-  family                   = "${var.project_name}-${var.environment}-api"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = var.api_cpu
-  memory                   = var.api_memory
-  execution_role_arn       = aws_iam_role.ecs_execution_role.arn
-  task_role_arn            = aws_iam_role.ecs_task_role.arn
-
-  container_definitions = jsonencode([{
-    name      = "api"
-    image     = var.api_container_image
-    essential = true
-
-    portMappings = [{
-      containerPort = 5000
-      protocol      = "tcp"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
     }]
-
-    environment = [
-      { name = "PORT",              value = "5000" },
-      { name = "PROVIDER",          value = "aws" },
-      { name = "AWS_REGION",        value = var.aws_region },
-      { name = "AWS_S3_TEMP_BUCKET",   value = aws_s3_bucket.raw_uploads.id },
-      { name = "AWS_S3_PUBLIC_BUCKET", value = aws_s3_bucket.hls_public.id },
-      { name = "AWS_SQS_QUEUE_URL",    value = aws_sqs_queue.transcode_queue.url },
-      { name = "ECS_CLUSTER_NAME",     value = aws_ecs_cluster.main.name },
-      { name = "ECS_TASK_DEFINITION",  value = "${var.project_name}-${var.environment}-worker" },
-      { name = "ECS_CONTAINER_NAME",   value = "worker" },
-      { name = "ECS_SUBNETS",          value = join(",", var.subnet_ids) },
-      { name = "MAX_UPLOAD_SIZE_MB",   value = "1000" },
-    ]
-
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.api_logs.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "api"
-      }
-    }
-  }])
+  })
 }
 
-# ─── Worker / Transcoder Task Definition ───────────────────────
-resource "aws_ecs_task_definition" "worker" {
-  family                   = "${var.project_name}-${var.environment}-worker"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = var.worker_cpu
-  memory                   = var.worker_memory
-  execution_role_arn       = aws_iam_role.ecs_execution_role.arn
-  task_role_arn            = aws_iam_role.ecs_task_role.arn
-
-  container_definitions = jsonencode([{
-    name      = "worker"
-    image     = var.worker_container_image
-    essential = true
-
-    entryPoint = ["node", "dist/worker.js"]
-
-    environment = [
-      { name = "PORT",              value = "5000" },
-      { name = "PROVIDER",          value = "aws" },
-      { name = "AWS_REGION",        value = var.aws_region },
-      { name = "AWS_S3_TEMP_BUCKET",   value = aws_s3_bucket.raw_uploads.id },
-      { name = "AWS_S3_PUBLIC_BUCKET", value = aws_s3_bucket.hls_public.id },
-      { name = "AWS_SQS_QUEUE_URL",    value = aws_sqs_queue.transcode_queue.url },
-    ]
-
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.worker_logs.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "worker"
-      }
-    }
-  }])
+# Same S3 / SQS / DynamoDB / RunTask access as the tasks
+resource "aws_iam_role_policy_attachment" "server_app_policy" {
+  role       = aws_iam_role.server.name
+  policy_arn = aws_iam_policy.app_policy.arn
 }
 
-# ─── Security Group for ECS Tasks ──────────────────────────────
-resource "aws_security_group" "ecs_tasks" {
-  name        = "${var.project_name}-${var.environment}-ecs-sg"
-  description = "Security group for ECS Fargate tasks"
+# Lets you open a shell from the AWS console (Session Manager), so no SSH port is needed
+resource "aws_iam_role_policy_attachment" "server_ssm" {
+  role       = aws_iam_role.server.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# Pulling the image from a private ECR repository
+resource "aws_iam_role_policy_attachment" "server_ecr" {
+  role       = aws_iam_role.server.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_iam_instance_profile" "server" {
+  name = "${var.project_name}-${var.environment}-server"
+  role = aws_iam_role.server.name
+}
+
+resource "aws_security_group" "server" {
+  name        = "${var.project_name}-${var.environment}-server-sg"
+  description = "Web access to the server"
   vpc_id      = var.vpc_id
 
   ingress {
-    from_port   = 5000
-    to_port     = 5000
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow inbound HTTP to API"
+    description = "HTTP (also used for the HTTPS certificate check)"
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS"
+  }
+
+  # Without an admin domain the dashboard is served on its own port, only to the addresses you allow
+  dynamic "ingress" {
+    for_each = var.admin_domain == "" ? [1] : []
+    content {
+      from_port   = 8080
+      to_port     = 8080
+      protocol    = "tcp"
+      cidr_blocks = var.admin_allowed_cidrs
+      description = "Admin dashboard (no domain)"
+    }
   }
 
   egress {
@@ -355,26 +436,147 @@ resource "aws_security_group" "ecs_tasks" {
   }
 }
 
-# ─── API ECS Service ───────────────────────────────────────────
-resource "aws_ecs_service" "api" {
-  name            = "${var.project_name}-${var.environment}-api"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = var.api_desired_count
-  launch_type     = "FARGATE"
+locals {
+  registry_host = split("/", var.container_image)[0]
 
-  network_configuration {
-    subnets          = var.subnet_ids
-    security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = true
+  app_env = join("\n", [
+    "PROVIDER=aws",
+    "AWS_REGION=${var.aws_region}",
+    "AWS_S3_TEMP_BUCKET=${aws_s3_bucket.raw_uploads.id}",
+    "AWS_S3_PUBLIC_BUCKET=${aws_s3_bucket.hls_public.id}",
+    "AWS_SQS_QUEUE_URL=${aws_sqs_queue.transcode_queue.url}",
+    "DYNAMODB_TABLE_NAME=${aws_dynamodb_table.videos.name}",
+    "ECS_CLUSTER_NAME=${aws_ecs_cluster.main.name}",
+    "ECS_TASK_DEFINITION=${var.project_name}-${var.environment}-transcoder",
+    "ECS_CONTAINER_NAME=transcoder",
+    "ECS_SUBNETS=${join(",", var.subnet_ids)}",
+    "ECS_SECURITY_GROUPS=${aws_security_group.ecs_tasks.id}",
+    "MAX_UPLOAD_SIZE_MB=${var.max_upload_size_mb}",
+    "WORKER_CONCURRENCY=${var.worker_concurrency}",
+    "ADMIN_API_KEY='${var.admin_api_key}'",
+    "USER_APP_URL=${local.user_url}",
+    "CDN_BASE_URL=${var.enable_cdn ? "https://${aws_cloudfront_distribution.hls_cdn[0].domain_name}" : ""}",
+    "PORT=5000",
+  ])
+
+  # Where each app is reached. Domains get automatic HTTPS from Caddy; without them: user on :80, admin on :8080
+  user_url  = var.user_domain != "" ? "https://${var.user_domain}/" : "http://${aws_eip.server.public_ip}/"
+  admin_url = var.admin_domain != "" ? "https://${var.admin_domain}/admin/" : "http://${aws_eip.server.public_ip}:8080/admin/"
+
+  caddyfile = join("\n", [
+    var.user_domain != "" ? "${var.user_domain} {\n  reverse_proxy user:5000\n}" : ":80 {\n  reverse_proxy user:5000\n}",
+    var.admin_domain != "" ? "${var.admin_domain} {\n  reverse_proxy admin:5000\n}" : ":8080 {\n  reverse_proxy admin:5000\n}",
+    "",
+  ])
+
+  compose = <<-YAML
+    services:
+      user:
+        image: ${var.container_image}
+        entrypoint: ["node", "dist/index.js"]
+        env_file: /opt/video/app.env
+        environment:
+          APP_MODE: user
+          PORT: "5000"
+        restart: always
+      admin:
+        image: ${var.container_image}
+        entrypoint: ["node", "dist/index.js"]
+        env_file: /opt/video/app.env
+        environment:
+          APP_MODE: admin
+          PORT: "5000"
+        restart: always
+      worker:
+        image: ${var.container_image}
+        entrypoint: ["node", "dist/worker.js"]
+        env_file: /opt/video/app.env
+        restart: always
+      caddy:
+        image: caddy:2
+        ports: ["80:80", "443:443", "8080:8080"]
+        volumes: ["/opt/video/Caddyfile:/etc/caddy/Caddyfile", "caddy_data:/data"]
+        restart: always
+    volumes:
+      caddy_data:
+  YAML
+}
+
+resource "aws_instance" "server" {
+  ami                         = data.aws_ssm_parameter.al2023_ami.value
+  instance_type               = "t3.micro"
+  subnet_id                   = var.subnet_ids[0]
+  vpc_security_group_ids      = [aws_security_group.server.id]
+  iam_instance_profile        = aws_iam_instance_profile.server.name
+  associate_public_ip_address = true
+
+  root_block_device {
+    volume_size = 20
+    volume_type = "gp3"
+  }
+
+  metadata_options {
+    http_tokens = "required"
+  }
+
+  user_data = <<-BASH
+    #!/bin/bash
+    set -euxo pipefail
+    dnf install -y docker
+    systemctl enable --now docker
+    mkdir -p /usr/local/lib/docker/cli-plugins /opt/video
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+    # 1 GB of RAM is tight for the API, the worker and thumbnail extraction: add swap
+    fallocate -l 1G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+    cat > /opt/video/app.env <<'ENVEOF'
+    ${local.app_env}
+    ENVEOF
+    chmod 600 /opt/video/app.env
+    cat > /opt/video/Caddyfile <<'CADDYEOF'
+    ${local.caddyfile}
+    CADDYEOF
+    cat > /opt/video/docker-compose.yml <<'COMPOSEEOF'
+    ${local.compose}
+    COMPOSEEOF
+
+    aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${local.registry_host}
+    cd /opt/video && docker compose up -d
+  BASH
+
+  # Changing the startup script must not replace a server that may be encoding. To change its settings
+  # or update the app, run the update steps on the running server instead (see docs/DEPLOY_AWS.md).
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-server"
   }
 }
 
-# ═════════════════════════════════════════════════════════════════
-# CLOUDFRONT CDN (Optional)
-# ═════════════════════════════════════════════════════════════════
+# A fixed address, so the link (and DNS) survives restarts. Created before the server so its address
+# can go into the server's settings (USER_APP_URL), then attached to it.
+resource "aws_eip" "server" {
+  domain = "vpc"
+}
 
-# Origin Access Identity for CloudFront → S3
+resource "aws_eip_association" "server" {
+  instance_id   = aws_instance.server.id
+  allocation_id = aws_eip.server.id
+}
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# CLOUDFRONT CDN (Optional)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+# Origin Access Identity for CloudFront â†’ S3
 resource "aws_cloudfront_origin_access_identity" "oai" {
   count   = var.enable_cdn ? 1 : 0
   comment = "${var.project_name} HLS CDN OAI"
@@ -443,4 +645,26 @@ resource "aws_cloudfront_distribution" "hls_cdn" {
   viewer_certificate {
     cloudfront_default_certificate = true
   }
+}
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# DNS (optional): records for the two domains, when the domain is hosted in Route 53
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+resource "aws_route53_record" "user" {
+  count   = var.route53_zone_id != "" && var.user_domain != "" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.user_domain
+  type    = "A"
+  ttl     = 300
+  records = [aws_eip.server.public_ip]
+}
+
+resource "aws_route53_record" "admin" {
+  count   = var.route53_zone_id != "" && var.admin_domain != "" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.admin_domain
+  type    = "A"
+  ttl     = 300
+  records = [aws_eip.server.public_ip]
 }

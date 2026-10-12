@@ -23,16 +23,23 @@ npm run dev:worker   # the queue worker (runs FFmpeg)
 - User site: http://localhost:5000/
 - Admin dashboard: http://localhost:5000/admin/
 
-### Run them as two servers
+### Run them as separate servers (own port each)
 
-Set `APP_MODE` to serve only one app, so each can be deployed (and firewalled) separately:
+One command starts the user site, the admin dashboard and the queue worker as three separate processes:
 
 ```bash
-APP_MODE=user  PORT=5000 npm start    # public site only
-APP_MODE=admin PORT=5001 npm start    # admin only
+npm run dev:split     # development: TypeScript, restarts on changes
+npm run build && npm run start:split   # compiled
 ```
 
-A `user` server has no admin routes at all (`/admin`, `/api/admin`, `/metrics` and `/api/docs` are 404, and uploads are refused even with a valid key). An `admin` server has no public API. Both share the same data (the same `LOCAL_DATA_DIR` locally, or the same buckets/tables on AWS). `docker compose up` starts them as separate services (user on 5000, admin on 5001).
+- User site: http://localhost:5000/ (`USER_PORT`)
+- Admin dashboard: http://localhost:5001/admin/ (`ADMIN_PORT`)
+
+The two servers share the same data (the same `LOCAL_DATA_DIR` locally, or the same buckets and tables on AWS), so what the admin does shows up on the user site: renames, publishing and unpublishing, thumbnails and series. The admin's **View public site** link goes to `USER_APP_URL` (set automatically by `dev:split`; set it yourself when deploying, e.g. `https://watch.example.com/`). Changes to publishing reach the user server within about 5 seconds, for media that is already open.
+
+You can also start each one yourself: `APP_MODE=user USER_PORT=5000 npm start` and `APP_MODE=admin ADMIN_PORT=5001 USER_APP_URL=... npm start`, plus `npm run dev:worker` for encoding. Without `APP_MODE` (the default `all`) a single server on `PORT` serves both, as before.
+
+A `user` server has no admin routes at all (`/admin`, `/api/admin`, `/metrics` and `/api/docs` are 404, and uploads are refused even with a valid key). An `admin` server has no public API, so it can be firewalled or kept on a private network. `docker compose up` starts them as separate services (user on 5000, admin on 5001).
 
 ## Admin sign-in
 
@@ -60,7 +67,7 @@ Failed jobs retry automatically up to 3 times (after 15 s, then 45 s, using a qu
 
 ## How videos are encoded
 
-All renditions are produced by a single FFmpeg run, so the source is decoded once instead of once per rendition. Encoding uses the `veryfast` x264 preset (change it with `FFMPEG_PRESET`) and always outputs 8-bit video: browsers cannot play the 10-bit H.264 ("High 10") that 10-bit sources would otherwise produce. A size such as "720p" is a class: a video qualifies when it is at least that **wide or tall**, so a 1280×536 widescreen film gets a native 720p. Each rendition fits its 16:9 box while keeping the source's aspect ratio. Sizes the source doesn't reach are skipped (and the log says so) unless **Also create sizes larger than the source** is ticked, which upscales them: no extra detail, slower, more storage. The admin pages list the renditions that were actually made. Audio is mixed down to stereo. The progress bar follows FFmpeg's real position in the video. Encoding time depends on the video's *duration* and your CPU, not its file size: a 3-hour movie takes hours on a laptop CPU.
+All renditions are produced by a single FFmpeg run, so the source is decoded once instead of once per rendition. Encoding uses constant-quality x264 (CRF 17, change with `FFMPEG_CRF`; each size has a peak bitrate cap of 1.2 / 2.5 / 6 / 12 Mbps for 360p / 480p / 720p / 1080p) with the `veryfast` preset (change it with `FFMPEG_PRESET`) and always outputs 8-bit video: browsers cannot play the 10-bit H.264 ("High 10") that 10-bit sources would otherwise produce. A size such as "720p" is a class: a video qualifies when it is at least that **wide or tall**, so a 1280×536 widescreen film gets a native 720p. Each rendition fits its 16:9 box while keeping the source's aspect ratio. Sizes the source doesn't reach are skipped (and the log says so) unless **Also create sizes larger than the source** is ticked, which upscales them: no extra detail, slower, more storage. The admin pages list the renditions that were actually made. Audio is mixed down to stereo. The progress bar follows FFmpeg's real position in the video. Encoding time depends on the video's *duration* and your CPU, not its file size: a 3-hour movie takes hours on a laptop CPU.
 
 ## Stopping, pausing and deleting
 
