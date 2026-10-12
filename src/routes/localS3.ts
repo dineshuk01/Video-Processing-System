@@ -208,7 +208,9 @@ router.get(
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Headers', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+      // Reprocessing rewrites files under the same names, so browsers must re-check them (a cheap 304 when
+      // unchanged); otherwise a viewer keeps playing the old, possibly broken, segments for up to an hour.
+      res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Content-Type', contentType);
 
       return res.sendFile(filePath);

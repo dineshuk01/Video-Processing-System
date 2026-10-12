@@ -212,6 +212,8 @@
       const json = await res.json();
       if (!json.success) throw new Error(json.error?.message || 'System check failed');
       const d = json.data;
+      const siteLink = document.querySelector('.nav-external');
+      if (siteLink && d.userAppUrl) siteLink.href = d.userAppUrl;
       store.health = { ok: d.healthy, provider: d.provider, components: d.components, limits: d.limits, cdnEnabled: d.cdnEnabled, checkedAt: d.checkedAt };
       // The upload page shows (and enforces client-side) the limit the server really uses
       if (d.limits && d.limits.maxUploadMb > 0) {

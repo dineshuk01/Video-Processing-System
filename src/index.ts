@@ -34,7 +34,7 @@ const MODES: AppMode[] = ['all', 'user', 'admin'];
 
 // 1. Validate Environment Variables
 function validateEnv(): AppMode {
-  const required = ['PORT', 'PROVIDER'];
+  const required = ['PROVIDER'];
   const missing: string[] = [];
 
   for (const key of required) {
@@ -96,7 +96,8 @@ const serveAdmin = mode !== 'user';
 
 // 2. Setup Express App
 const app = express();
-const port = parseInt(process.env.PORT || '5000', 10);
+// Each app has its own port when run on its own (USER_PORT / ADMIN_PORT); PORT is used otherwise
+const port = parseInt((mode === 'user' ? process.env.USER_PORT : mode === 'admin' ? process.env.ADMIN_PORT : '') || process.env.PORT || '5000', 10);
 const webRoot = path.join(__dirname, '..', 'web');
 
 // Security Headers (configured to allow inline video streaming & Hls.js cross-origin scripts)
@@ -208,7 +209,7 @@ const server: Server = app.listen(port, () => {
   Logger.info(`Video Processing server started on port ${port} (APP_MODE=${mode})`, {
     provider: process.env.PROVIDER,
     nodeEnv: process.env.NODE_ENV,
-    userApp: serveUser ? `http://localhost:${port}/` : 'off',
+    userApp: serveUser ? `http://localhost:${port}/` : (process.env.USER_APP_URL || 'off'),
     adminApp: serveAdmin ? `http://localhost:${port}/admin/` : 'off',
   });
 });

@@ -81,6 +81,8 @@ router.get('/system', async (req: Request, res: Response, next: NextFunction) =>
         maxAttempts: 3,
       },
       cdnEnabled: !!process.env.CDN_BASE_URL,
+      // Where the public site lives when it runs as its own server (otherwise it shares this address)
+      userAppUrl: process.env.USER_APP_URL || null,
       checkedAt: new Date().toISOString(),
     });
   } catch (err) {
