@@ -76,13 +76,41 @@ const HLS_VARIANTS: HlsVariant[] = [
   { label: '1080p', width: 1920, height: 1080, videoBitrate: '4500k', audioBitrate: '128k', bandwidth: 4500000 },
 ];
 
+// An admin paused or deleted the video: stop quietly instead of failing or retrying
+class AbortedError extends Error {}
+const ABORT_EXIT_CODE = 3;
+let started = false; // true once this task has marked the video PROCESSING
+
+async function stopRequested(): Promise<boolean> {
+  const record = await dbService.getVideo(videoId).catch(() => undefined);
+  if (record === undefined) return false;                  // database hiccup: keep going
+  if (record === null) return true;                        // the video was deleted
+  if (record.status === VideoStatus.PAUSED) return true;   // paused
+  // Reset to something else (e.g. paused, then resumed): a newer run owns the video now
+  return started && record.status !== VideoStatus.PROCESSING;
+}
+
+async function assertNotStopped() {
+  if (await stopRequested()) throw new AbortedError('Stopped by an admin');
+}
+
 function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     Logger.info(`FFmpeg: Executing command -> ${ffmpegBin} ${args.join(' ')}`);
     const proc = spawn(ffmpegBin, args);
     let stderr = '';
+    let stopped = false;
+
+    // Look for a pause/delete request while FFmpeg runs and kill it straight away
+    const watcher = setInterval(async () => {
+      if (!stopped && (await stopRequested())) {
+        stopped = true;
+        proc.kill('SIGKILL');
+      }
+    }, 1500);
 
     proc.on('error', (err) => {
+      clearInterval(watcher);
       reject(new Error(`Failed to start FFmpeg: ${err.message}`));
     });
 
@@ -91,7 +119,10 @@ function runFfmpeg(args: string[]): Promise<void> {
     });
 
     proc.on('close', (code) => {
-      if (code === 0) {
+      clearInterval(watcher);
+      if (stopped) {
+        reject(new AbortedError('Stopped by an admin'));
+      } else if (code === 0) {
         resolve();
       } else {
         reject(
@@ -183,11 +214,15 @@ async function executeTranscoding() {
     const storage = getStorageService();
     await storage.downloadFile(inputBucket, inputKey, inputFilePath);
 
+    // Stop here if the video was paused or deleted while the source was downloading
+    await assertNotStopped();
+
     // Update state to PROCESSING - 5%
     await dbService.updateVideo(videoId, {
       status: VideoStatus.PROCESSING,
       progress: 5,
     });
+    started = true;
 
     await log('info', 'Source file downloaded');
 
@@ -241,6 +276,7 @@ async function executeTranscoding() {
     let currentProgress = 10;
 
     for (const variant of eligibleVariants) {
+      await assertNotStopped();
       Logger.info(`Transcoder Task: Generating ${variant.label} HLS playlist...`);
       const ffmpegArgs = ['-y', '-i', inputFilePath];
       
@@ -273,6 +309,8 @@ async function executeTranscoding() {
       currentProgress += progressPerVariant;
       await dbService.updateVideo(videoId, { progress: Math.round(currentProgress) });
     }
+
+    await assertNotStopped();
 
     // Step E: Extract Thumbnail Poster Frame (progress +2%)
     Logger.info(`Transcoder Task: Extracting poster frame thumbnail for video ${videoId}...`);
@@ -346,6 +384,7 @@ Enjoy smooth resolution switching and clear captions!
     const files = await fs.promises.readdir(outputDir);
     
     for (const file of files) {
+      await assertNotStopped();
       const filePath = path.join(outputDir, file);
       const fileKey = `${outputKeyPrefix}/${file}`;
       await storage.uploadFile(outputBucket, fileKey, filePath);
@@ -393,6 +432,9 @@ Enjoy smooth resolution switching and clear captions!
       }
     }
 
+    // A pause/delete that arrived during the upload must not be overwritten by "completed"
+    await assertNotStopped();
+
     await dbService.updateVideo(videoId, {
       status: VideoStatus.COMPLETED,
       progress: 100,
@@ -405,6 +447,19 @@ Enjoy smooth resolution switching and clear captions!
     if (record?.autoPublish) await log('info', 'Published to the public site (auto-publish)');
     Logger.info(`Transcoder Task: Video ${videoId} successfully transcoded and uploaded!`);
   } catch (err: any) {
+    if (err instanceof AbortedError) {
+      Logger.info(`Transcoder Task: Video ${videoId} was paused or deleted. Stopping.`);
+      try {
+        if (fs.existsSync(tempDir)) await fs.promises.rm(tempDir, { recursive: true, force: true });
+        // Remove any partial output that was already uploaded
+        await getStorageService().deleteDirectory(outputBucket, outputKeyPrefix);
+      } catch (cleanupErr: any) {
+        Logger.warn('Could not fully clean up after stopping', cleanupErr.message);
+      }
+      await log('warn', 'Processing stopped by an admin');
+      process.exit(ABORT_EXIT_CODE);
+    }
+
     Logger.error(`Transcoder Task: Failed to transcode video ${videoId}`, err.message);
     await log('error', `Transcoding error: ${err.message}`);
 

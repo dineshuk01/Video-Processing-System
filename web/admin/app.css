@@ -453,3 +453,9 @@ tr.log-error td:last-child { color: var(--st-fail); }
 /* Preview bar */
 .admin-bar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin: 0 0 1rem; padding: 0.6rem 0.9rem; border-radius: var(--radius-sm); background: var(--primary-50); border: 1px dashed var(--primary); }
 .admin-bar-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--primary); }
+
+/* Paused status + inline row actions */
+.pill-PAUSED { background: #e0e7ff; color: #4338ca; }
+body.dark-page .pill-PAUSED { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+td.right.nowrap .btn { vertical-align: middle; }
+.btn-sm svg { margin-right: 0.1rem; }

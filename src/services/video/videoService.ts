@@ -213,11 +213,56 @@ export class VideoService {
     return updated;
   }
 
+  // Stop a queued or running job and hold the video. The original upload is kept; Resume starts
+  // processing again from the beginning. A running transcode notices within a couple of seconds.
+  async pauseVideo(id: string): Promise<VideoRecord> {
+    const video = await dbService.getVideo(id);
+    if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
+    if (video.status === VideoStatus.PAUSED) return video;
+    if (video.status !== VideoStatus.PROCESSING && video.status !== VideoStatus.UPLOADED) {
+      throw new HttpError(`Only queued or processing videos can be paused (this one is ${video.status.toLowerCase()})`, 409, 'NOT_PAUSABLE');
+    }
+    const updated = await dbService.updateVideo(id, { status: VideoStatus.PAUSED, error: undefined });
+    await dbService.appendEvent(id, 'warn',
+      video.status === VideoStatus.PROCESSING
+        ? 'Paused by an admin. Processing is stopping; resuming starts again from the beginning.'
+        : 'Paused by an admin before processing started');
+    return updated;
+  }
+
+  // Remove the processed (HLS) output but keep the original upload, so it can be processed again
+  async deleteProcessed(id: string): Promise<VideoRecord> {
+    const video = await dbService.getVideo(id);
+    if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
+    if (video.status === VideoStatus.PROCESSING || video.status === VideoStatus.UPLOADED) {
+      throw new HttpError('Pause the video first, then delete its processed files', 409, 'STILL_PROCESSING');
+    }
+    const storage = getStorageService();
+    if (!video.rawObjectKey || !(await storage.fileExists(this.buckets.temp, video.rawObjectKey))) {
+      throw new HttpError('The original upload is gone, so deleting the processed files would leave nothing to play or reprocess. Delete the whole video instead.', 409, 'NO_SOURCE');
+    }
+    await storage.deleteDirectory(this.buckets.public, `processed/${id}`);
+    clearPublishedCache(id);
+    const updated = await dbService.updateVideo(id, {
+      status: VideoStatus.PAUSED,
+      published: false,
+      progress: 0,
+      error: undefined,
+      failedAt: undefined,
+      completedAt: undefined,
+      hlsPlaylistUrl: undefined,
+      thumbnailUrl: undefined,
+      subtitleUrl: undefined,
+    });
+    await dbService.appendEvent(id, 'warn', 'Processed files deleted by an admin. The original is kept; resume to process it again.');
+    return updated;
+  }
+
   // Re-run processing for a failed video, or reprocess a finished one (e.g. with new qualities)
   async retryVideo(id: string, input: { qualities?: unknown } = {}): Promise<VideoRecord> {
     const video = await dbService.getVideo(id);
     if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
-    if (![VideoStatus.FAILED, VideoStatus.COMPLETED, VideoStatus.UPLOADED].includes(video.status)) {
+    if (![VideoStatus.FAILED, VideoStatus.COMPLETED, VideoStatus.UPLOADED, VideoStatus.PAUSED].includes(video.status)) {
       throw new HttpError(`A ${video.status.toLowerCase()} video cannot be retried right now`, 409, 'NOT_RETRYABLE');
     }
     if (!video.rawObjectKey) throw new HttpError('The original upload is no longer available', 409, 'NO_SOURCE');
@@ -240,7 +285,8 @@ export class VideoService {
       subtitleUrl: undefined,
       qualities,
     });
-    await dbService.appendEvent(id, 'info', `Retry requested by an admin${qualities ? ` (qualities: ${qualities.join(', ')}p)` : ''}`);
+    const verb = video.status === VideoStatus.PAUSED ? 'Resumed' : 'Retry requested';
+    await dbService.appendEvent(id, 'info', `${verb} by an admin${qualities ? ` (qualities: ${qualities.join(', ')}p)` : ''}`);
     await this.enqueue(id, video.rawObjectKey);
     return updated;
   }
@@ -286,6 +332,10 @@ export class VideoService {
 
     const storage = getStorageService();
     const { temp: tempBucket, public: publicBucket } = this.buckets;
+
+    if (video.status === VideoStatus.PROCESSING) {
+      Logger.info(`Deleting video ${id} while it is processing. The transcoder will stop on its own.`);
+    }
 
     // 1. Delete raw input file if exists
     if (video.rawObjectKey) {

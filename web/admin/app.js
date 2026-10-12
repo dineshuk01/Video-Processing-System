@@ -64,6 +64,7 @@
     eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5"/>',
     activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    pause: '<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>',
     refresh: '<path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7"/>',
     hdd: '<rect x="3" y="14" width="18" height="6" rx="2"/><path d="M3 14l3-9h12l3 9M7 17h0"/>',
   };
@@ -76,6 +77,7 @@
     loaded: false,
     health: null,
     overview: null,
+    deleted: new Set(), // ids deleted here: a live update already in flight must not bring them back
     connection: 'connecting',
     notifications: [],
     ui: { search: '', status: 'all' },
@@ -119,6 +121,7 @@
     const previous = store.videos;
     const next = replace ? {} : { ...previous };
     for (const video of list) {
+      if (store.deleted.has(video.id)) continue;
       const before = previous[video.id];
       next[video.id] = video;
       if (store.loaded && before && before.status !== video.status) {
@@ -145,6 +148,7 @@
   }
 
   VF.removeVideo = (id) => {
+    store.deleted.add(id);
     const { [id]: _removed, ...rest } = store.videos;
     store.videos = rest;
     store.emit('videos');

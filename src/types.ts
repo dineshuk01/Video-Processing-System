@@ -3,6 +3,7 @@ export enum VideoStatus {
   UPLOADING = 'UPLOADING',
   UPLOADED = 'UPLOADED',
   PROCESSING = 'PROCESSING',
+  PAUSED = 'PAUSED',            // stopped by an admin; the original is kept and can be processed again
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED'
 }

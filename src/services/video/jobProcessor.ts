@@ -61,6 +61,13 @@ export class JobProcessor {
         return;
       }
 
+      // A paused video must not be processed: drop its (now stale) queue message
+      if (video.status === VideoStatus.PAUSED) {
+        Logger.info(`Video ${videoId} is paused. Dropping its queue message.`);
+        await getQueueService().deleteMessage(queueUrl, receiptHandle);
+        return;
+      }
+
       // 3. Resolve bucket and key
       const inputBucket = bucket || (
         process.env.PROVIDER === 'aws'
@@ -105,6 +112,16 @@ export class JobProcessor {
       await log(videoId, 'info', `Processing finished in ${duration.toFixed(1)}s`);
       Logger.info(`Worker successfully completed job for video: ${videoId} in ${duration.toFixed(1)}s`);
     } catch (err: any) {
+      // The transcoder stops when an admin pauses or deletes the video. That is not a failure:
+      // no retry, no failed-job count, and nothing left in the queue.
+      const latest = await dbService.getVideo(videoId).catch(() => undefined);
+      if (latest === null || (latest && latest.status === VideoStatus.PAUSED)) {
+        Logger.info(`Job for video ${videoId} stopped: ${latest === null ? 'the video was deleted' : 'paused by an admin'}.`);
+        await getQueueService().deleteMessage(queueUrl, receiptHandle).catch(() => {});
+        if (latest) await log(videoId, 'info', 'Processing stopped');
+        return;
+      }
+
       Logger.error(`Job processing failed for video ${videoId} (Attempt ${retryCount + 1}/${MAX_RETRIES})`, err.message);
 
       const queue = getQueueService();

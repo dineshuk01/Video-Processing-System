@@ -34,6 +34,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
         published: count((v) => !!v.published && v.status === VideoStatus.COMPLETED),
         drafts: count((v) => v.status === VideoStatus.COMPLETED && !v.published),
         inProgress: count((v) => ['PENDING', 'UPLOADING', 'UPLOADED', 'PROCESSING'].includes(v.status)),
+        paused: count((v) => v.status === VideoStatus.PAUSED),
         failed: count((v) => v.status === VideoStatus.FAILED),
         uploadedToday: count((v) => new Date(v.createdAt).getTime() >= day),
         storageBytes: all.reduce((sum, v) => sum + (v.fileSize || 0), 0),
@@ -143,6 +144,36 @@ router.patch('/videos/:id', async (req: Request, res: Response, next: NextFuncti
     const { title, qualities, autoPublish } = req.body || {};
     const video = await videoService.updateSettings(req.params.id, { title, qualities, autoPublish });
     return ResponseHandler.success(res, withoutEvents(video));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/videos/:id/pause', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, withoutEvents(await videoService.pauseVideo(req.params.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Resume a paused video: processing starts again from the beginning
+router.post('/videos/:id/resume', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const video = await dbService.getVideo(req.params.id);
+    if (video && video.status !== VideoStatus.PAUSED) {
+      return ResponseHandler.error(res, 'Only paused videos can be resumed', 409, 'NOT_PAUSED');
+    }
+    return ResponseHandler.success(res, withoutEvents(await videoService.retryVideo(req.params.id, { qualities: req.body?.qualities })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Delete only the processed output; the original upload stays so it can be processed again
+router.post('/videos/:id/delete-processed', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, withoutEvents(await videoService.deleteProcessed(req.params.id)));
   } catch (err) {
     next(err);
   }

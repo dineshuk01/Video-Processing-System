@@ -58,6 +58,14 @@ Choose renditions (360p/480p/720p/1080p) on upload, or edit them later and use *
 
 Failed jobs retry automatically up to 3 times (after 15 s, then 45 s, using a queue delay, so a worker restart can't lose a retry). After that the video is `FAILED`; use *Retry* on the Jobs page. Every step is written to the video's processing log (Jobs → Log, or the global Logs page).
 
+## Stopping, pausing and deleting
+
+Every video row in the admin *Videos* and *Processing Jobs* pages has **Pause** (queued or processing videos) and **Delete** buttons, and the row menu has the rest.
+
+- **Pause** stops the job now (FFmpeg is killed within a couple of seconds, longer if the machine is busy) and holds the video as **Paused**. The original upload is kept, partial output is removed, and the worker is free for the next video. **Resume** starts processing again from the beginning. It is not a freeze-and-continue: FFmpeg cannot be suspended the same way on Windows and Linux.
+- **Delete** works at any stage. On a queued or processing video it stops the job first ("Stop & delete"), then removes the original and every processed file. A stopped job is not counted as a failure and is not retried.
+- **Delete processed files** removes only the streaming output of a finished, failed or paused video. The video leaves the public site and becomes *Paused* with its original kept, so you can process it again with **Resume**. It is refused if the original upload is gone (use Delete instead).
+
 ## What stays on the viewer's device
 
 My List and watch history are stored in the viewer's browser (`localStorage`), because there are no user accounts yet. When you add login, move them to the server keyed by user id.

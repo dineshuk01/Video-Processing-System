@@ -13,7 +13,7 @@
   // ─── Shared helpers ────────────────────────────────────────
   const STATUS_LABEL = {
     PENDING: 'Pending', UPLOADING: 'Uploading', UPLOADED: 'Queued',
-    PROCESSING: 'Processing', COMPLETED: 'Completed', FAILED: 'Failed',
+    PROCESSING: 'Processing', PAUSED: 'Paused', COMPLETED: 'Completed', FAILED: 'Failed',
   };
   const pill = (status) => `<span class="pill pill-${esc(status)}">${esc(STATUS_LABEL[status] || status)}</span>`;
   const titleOf = (v) => v.title || v.originalName;
@@ -36,6 +36,7 @@
     const p = Math.round(v.progress || 0);
     if (v.status === 'PENDING' || v.status === 'UPLOADING') return 'Waiting for the upload to finish';
     if (v.status === 'UPLOADED') return 'In queue — waiting for a transcoder';
+    if (v.status === 'PAUSED') return 'Paused — the original is kept';
     if (v.status !== 'PROCESSING') return STATUS_LABEL[v.status] || v.status;
     if (p < 10) return 'Preparing video';
     if (p <= 80) return 'Encoding resolutions';
@@ -69,8 +70,8 @@
   async function deleteVideo(id) {
     const video = store.videos[id];
     const ok = await confirmDialog({
-      title: 'Delete this video?',
-      message: `"${video ? titleOf(video) : id}" and all of its files will be permanently removed.${video && video.published ? ' It is published, so it will disappear from the public site.' : ''}`,
+      title: video && ['PROCESSING', 'UPLOADED'].includes(video.status) ? 'Stop and delete this video?' : 'Delete this video?',
+      message: `"${video ? titleOf(video) : id}" and all of its files (the original and the processed versions) will be permanently removed.${video && ['PROCESSING', 'UPLOADED'].includes(video.status) ? ' Processing will be stopped.' : ''}${video && video.published ? ' It is published, so it will disappear from the public site.' : ''}`,
       confirmText: 'Delete',
       danger: true,
     });
@@ -115,7 +116,55 @@
     }
   }
 
-  const canRetry = (v) => ['FAILED', 'COMPLETED'].includes(v.status);
+  const canRetry = (v) => ['FAILED', 'COMPLETED', 'PAUSED'].includes(v.status);
+  const retryLabel = (v) => (v.status === 'FAILED' ? 'Retry processing' : v.status === 'PAUSED' ? 'Resume processing' : 'Reprocess');
+  const canPause = (v) => v.status === 'PROCESSING' || v.status === 'UPLOADED';
+  const canDeleteProcessed = (v) => ['COMPLETED', 'PAUSED', 'FAILED'].includes(v.status) && !!v.hlsPlaylistUrl;
+
+  // Stops the running or queued job and holds the video. Resume starts again from the beginning.
+  async function pauseVideo(id) {
+    const video = store.videos[id];
+    const ok = await confirmDialog({
+      title: 'Pause processing?',
+      message: `"${video ? titleOf(video) : id}" will stop processing now and be held, with the original upload kept. Resuming starts processing again from the beginning.`,
+      confirmText: 'Pause',
+    });
+    if (!ok) return false;
+    try {
+      const updated = await api(`/api/admin/videos/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
+      store.emit('videos');
+      VF.refreshOverview();
+      toast('Paused. Processing is stopping.', 'success', 2500);
+      return true;
+    } catch (err) {
+      toast(err.message, 'error');
+      return false;
+    }
+  }
+
+  // Remove the processed output only; the original upload stays so it can be processed again
+  async function deleteProcessedFiles(id) {
+    const video = store.videos[id];
+    const ok = await confirmDialog({
+      title: 'Delete the processed files?',
+      message: `The processed (streaming) files of "${video ? titleOf(video) : id}" will be removed${video && video.published ? ' and it will disappear from the public site' : ''}. The original upload is kept, so you can process it again.`,
+      confirmText: 'Delete processed files',
+      danger: true,
+    });
+    if (!ok) return false;
+    try {
+      const updated = await api(`/api/admin/videos/${encodeURIComponent(id)}/delete-processed`, { method: 'POST' });
+      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
+      store.emit('videos');
+      VF.refreshOverview();
+      toast('Processed files deleted. The original is kept.', 'success', 3000);
+      return true;
+    } catch (err) {
+      toast(err.message, 'error');
+      return false;
+    }
+  }
 
   function rowMenu(anchor, video) {
     const items = [];
@@ -128,10 +177,36 @@
     } else {
       items.push({ label: 'View job & log', icon: 'eye', onClick: () => openJobDialog(video.id) });
     }
+    if (canPause(video)) items.push({ label: 'Pause processing', icon: 'pause', onClick: () => pauseVideo(video.id) });
+    if (canRetry(video)) items.push({ label: retryLabel(video), icon: 'refresh', onClick: () => retryVideo(video.id) });
     items.push({ label: 'Edit settings', icon: 'settings', onClick: () => openEditDialog(video.id) });
-    if (canRetry(video)) items.push({ label: video.status === 'FAILED' ? 'Retry processing' : 'Reprocess', icon: 'refresh', onClick: () => retryVideo(video.id) });
-    items.push({ label: 'Delete', icon: 'trash', danger: true, onClick: () => deleteVideo(video.id) });
+    if (canDeleteProcessed(video)) items.push({ label: 'Delete processed files', icon: 'trash', danger: true, onClick: () => deleteProcessedFiles(video.id) });
+    items.push({ label: ['PROCESSING', 'UPLOADED'].includes(video.status) ? 'Stop & delete' : 'Delete video', icon: 'trash', danger: true, onClick: () => deleteVideo(video.id) });
     VF.menu(anchor, items);
+  }
+
+  // Quick buttons shown in table rows: pause/resume/retry and delete without opening a menu
+  function quickActions(v) {
+    const id = esc(v.id);
+    const buttons = [];
+    if (canPause(v)) buttons.push(`<button class="btn btn-ghost btn-sm" data-pause="${id}">${icon('pause', 13)} Pause</button>`);
+    else if (v.status === 'PAUSED') buttons.push(`<button class="btn btn-primary btn-sm" data-retry="${id}">${icon('play', 13)} Resume</button>`);
+    else if (v.status === 'FAILED') buttons.push(`<button class="btn btn-primary btn-sm" data-retry="${id}">${icon('refresh', 13)} Retry</button>`);
+    buttons.push(`<button class="btn btn-ghost btn-sm btn-danger-text" data-delete="${id}" aria-label="Delete ${esc(titleOf(v))}">${icon('trash', 13)} Delete</button>`);
+    return buttons.join(' ');
+  }
+
+  // One click handler for the quick buttons, shared by the Videos and Jobs tables
+  function handleQuickActions(e) {
+    const pause = e.target.closest('[data-pause]');
+    const retry = e.target.closest('[data-retry]');
+    const del = e.target.closest('[data-delete]');
+    const job = e.target.closest('[data-job]');
+    if (pause) { pauseVideo(pause.dataset.pause); return true; }
+    if (retry) { retryVideo(retry.dataset.retry); return true; }
+    if (del) { deleteVideo(del.dataset.delete); return true; }
+    if (job) { openJobDialog(job.dataset.job); return true; }
+    return false;
   }
 
   // Clicking a row opens it, unless the click was on a button or link inside it
@@ -230,12 +305,19 @@
         <div id="job-log"><p class="muted">Loading…</p></div>
         <div class="modal-actions">
           ${v.status === 'COMPLETED' ? `<a class="btn btn-ghost" href="#/watch/${encodeURIComponent(v.id)}" data-close>Preview</a>` : ''}
-          ${canRetry(v) ? `<button class="btn btn-primary" id="job-retry">${icon('refresh', 15)} ${v.status === 'FAILED' ? 'Retry processing' : 'Reprocess'}</button>` : ''}
+          ${canDeleteProcessed(v) ? '<button class="btn btn-ghost btn-danger-text" id="job-del-processed">Delete processed files</button>' : ''}
+          <button class="btn btn-ghost btn-danger-text" id="job-delete">${['PROCESSING', 'UPLOADED'].includes(v.status) ? 'Stop &amp; delete' : 'Delete video'}</button>
+          ${canPause(v) ? `<button class="btn btn-ghost" id="job-pause">${icon('pause', 15)} Pause</button>` : ''}
+          ${canRetry(v) ? `<button class="btn btn-primary" id="job-retry">${icon(v.status === 'PAUSED' ? 'play' : 'refresh', 15)} ${retryLabel(v)}</button>` : ''}
           <button class="btn btn-ghost" data-close>Close</button>
         </div>`,
     });
     const retry = modal.el.querySelector('#job-retry');
     if (retry) retry.addEventListener('click', async () => { if (await retryVideo(id)) modal.close(); });
+    const bind = (sel, fn) => { const el = modal.el.querySelector(sel); if (el) el.addEventListener('click', async () => { if (await fn(id)) modal.close(); }); };
+    bind('#job-pause', pauseVideo);
+    bind('#job-delete', deleteVideo);
+    bind('#job-del-processed', deleteProcessedFiles);
     try {
       const data = await api(`/api/admin/videos/${encodeURIComponent(id)}/logs`);
       const target = modal.el.querySelector('#job-log');
@@ -294,7 +376,7 @@
           set('s-pub', o.totals.published);
           set('s-pub-sub', `${o.totals.drafts} draft${o.totals.drafts === 1 ? '' : 's'} ready to publish`);
           set('s-prog', o.totals.inProgress);
-          set('s-prog-sub', o.retrying ? `${o.retrying} being retried` : 'no retries');
+          set('s-prog-sub', [o.retrying ? `${o.retrying} being retried` : 'no retries', o.totals.paused ? `${o.totals.paused} paused` : ''].filter(Boolean).join(' · '));
           set('s-fail', o.totals.failed);
           set('s-fail-sub', o.totals.failed ? 'needs your attention' : 'none');
           root.querySelector('#s-fail-sub').classList.toggle('bad', o.totals.failed > 0);
@@ -373,7 +455,7 @@
             <label><span class="sr-only">Filter</span>
               <select id="v-status" class="select">
                 <option value="all">All videos</option><option value="published">Published</option>
-                <option value="draft">Drafts</option><option value="active">In progress</option><option value="FAILED">Failed</option>
+                <option value="draft">Drafts</option><option value="active">In progress</option><option value="PAUSED">Paused</option><option value="FAILED">Failed</option>
               </select></label>
           </div>
           <div class="table-wrap"><table class="table">
@@ -400,6 +482,7 @@
         if (s === 'draft' && !(!v.published && v.status === 'COMPLETED')) return false;
         if (s === 'active' && !isActive(v)) return false;
         if (s === 'FAILED' && v.status !== 'FAILED') return false;
+        if (s === 'PAUSED' && v.status !== 'PAUSED') return false;
         if (q) {
           const needle = q.toLowerCase();
           if (!titleOf(v).toLowerCase().includes(needle) && !v.originalName.toLowerCase().includes(needle) && !v.id.toLowerCase().includes(needle)) return false;
@@ -429,7 +512,7 @@
               : '<span class="muted">—</span>'}</td>
             <td class="muted">${esc(renditionsOf(v))}</td><td>${durationOf(v)}</td>
             <td class="muted">${esc(timeAgo(v.createdAt))}</td>
-            <td class="right"><button class="icon-btn" data-menu-anchor data-id="${esc(v.id)}" aria-label="Actions for ${esc(titleOf(v))}" aria-haspopup="menu">${icon('dots', 18)}</button></td></tr>`,
+            <td class="right nowrap">${quickActions(v)} <button class="icon-btn" data-menu-anchor data-id="${esc(v.id)}" aria-label="More actions for ${esc(titleOf(v))}" aria-haspopup="menu">${icon('dots', 18)}</button></td></tr>`,
         });
 
         const none = filtered.length === 0;
@@ -460,6 +543,7 @@
         store.emit('ui');
       });
       tbody.addEventListener('click', (e) => {
+        if (handleQuickActions(e)) return;
         const toggle = e.target.closest('[data-publish]');
         if (toggle) { setPublished(toggle.dataset.publish, toggle.dataset.to === 'true'); return; }
         const btn = e.target.closest('[data-menu-anchor]');
@@ -498,13 +582,14 @@
       const tabsEl = root.querySelector('#job-tabs');
       tbody.innerHTML = skeletonRows(7, 4);
 
-      const TABS = [['all', 'All'], ['active', 'In progress'], ['FAILED', 'Failed'], ['COMPLETED', 'Completed']];
+      const TABS = [['all', 'All'], ['active', 'In progress'], ['PAUSED', 'Paused'], ['FAILED', 'Failed'], ['COMPLETED', 'Completed']];
       const inTab = (v, tab) => tab === 'all' || (tab === 'active' ? isActive(v) : v.status === tab);
 
       function progressCell(v) {
         const done = v.status === 'COMPLETED';
         const waiting = ['PENDING', 'UPLOADING', 'UPLOADED'].includes(v.status);
         const pct = done ? 100 : waiting ? 0 : Math.round(v.progress || 0);
+        if (v.status === 'PAUSED') return '<span class="muted">Paused</span>';
         const cls = done ? 'bar-ok' : v.status === 'FAILED' ? 'bar-bad' : '';
         return `<div class="prog"><span class="pct">${waiting ? 'Queued' : `${pct}%`}</span>
           <div class="progress ${waiting ? 'indeterminate' : ''}"><div class="progress-bar ${cls}" style="width:${waiting ? 35 : pct}%"></div></div></div>`;
@@ -528,8 +613,7 @@
             <td>${v.attempts || 0}</td>
             <td>${progressCell(v)}</td>
             <td class="muted">${esc(timeAgo(v.processingStartedAt || v.createdAt))}</td>
-            <td class="right"><button class="btn btn-ghost btn-sm" data-job="${esc(v.id)}">Log</button>
-              ${v.status === 'FAILED' ? `<button class="btn btn-primary btn-sm" data-retry="${esc(v.id)}">Retry</button>` : ''}</td></tr>`,
+            <td class="right nowrap"><button class="btn btn-ghost btn-sm" data-job="${esc(v.id)}">Log</button> ${quickActions(v)}</td></tr>`,
         });
         empty.classList.toggle('hidden', list.length > 0);
         empty.innerHTML = list.length ? '' : `${icon('jobs', 32)}<h3>No jobs here</h3><p>${jobsTab === 'all' ? 'Upload a video to create a job.' : 'Nothing matches this tab right now.'}</p>`;
@@ -539,12 +623,7 @@
         const tab = e.target.closest('[data-tab]');
         if (tab) { jobsTab = tab.dataset.tab; render(); }
       });
-      tbody.addEventListener('click', (e) => {
-        const job = e.target.closest('[data-job]');
-        const retry = e.target.closest('[data-retry]');
-        if (job) openJobDialog(job.dataset.job);
-        if (retry) retryVideo(retry.dataset.retry);
-      });
+      tbody.addEventListener('click', handleQuickActions);
 
       render();
       const unsub = store.subscribe((t) => { if (t.has('videos')) render(); });
