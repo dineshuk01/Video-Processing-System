@@ -3,78 +3,97 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a0c15" />
   <title>VideoFlow — Video Processing Dashboard</title>
   <meta name="description" content="Upload, transcode, and stream adaptive HLS videos with VideoFlow." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" />
   <link rel="stylesheet" href="app.css" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🎬</text></svg>" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
 
   <!-- ── Header ── -->
   <header class="header">
     <a class="header-brand" href="/">
-      <div class="logo-icon">🎬</div>
+      <div class="logo-icon" aria-hidden="true">🎬</div>
       VideoFlow
     </a>
-    <div style="display:flex;align-items:center;gap:1.5rem;">
-      <span class="live-badge hidden" id="live-badge">Live</span>
-      <div class="status-dot">API Connected</div>
+    <div class="header-right">
+      <a class="header-link" href="/api/docs" target="_blank" rel="noopener">API Docs</a>
+      <div class="conn conn-connecting" id="conn" role="status" aria-live="polite">
+        <span class="conn-dot" aria-hidden="true"></span>
+        <span id="conn-label">Connecting…</span>
+      </div>
     </div>
   </header>
 
   <!-- ── Main ── -->
-  <main class="container">
-    <div style="margin: 2rem 0 2.5rem;">
+  <main class="container" id="main">
+    <div class="hero">
       <h1 class="page-title">Video Processing Dashboard</h1>
-      <p class="page-subtitle">Upload a video to start the adaptive HLS transcoding pipeline.</p>
+      <p class="page-subtitle">Upload a video and it is automatically transcoded into adaptive HLS streams.</p>
     </div>
 
+    <!-- ── Stats ── -->
+    <section class="stats" aria-label="Library summary">
+      <div class="stat"><span class="stat-value" id="stat-total">0</span><span class="stat-label">Total videos</span></div>
+      <div class="stat stat-processing"><span class="stat-value" id="stat-processing">0</span><span class="stat-label">In progress</span></div>
+      <div class="stat stat-completed"><span class="stat-value" id="stat-completed">0</span><span class="stat-label">Ready to watch</span></div>
+      <div class="stat stat-failed"><span class="stat-value" id="stat-failed">0</span><span class="stat-label">Failed</span></div>
+    </section>
+
     <!-- ── Upload Section ── -->
-    <section class="upload-section">
+    <section class="upload-section" aria-label="Upload videos">
       <div class="upload-zone" id="upload-zone">
-        <input type="file" id="file-input" accept="video/mp4,video/quicktime,video/x-matroska" />
-        <div class="upload-icon">📤</div>
-        <h3>Drag & drop a video, or click to browse</h3>
-        <p>Supports MP4, MOV, MKV · Max 100MB</p>
+        <input type="file" id="file-input" multiple
+               accept="video/mp4,video/quicktime,video/x-matroska,.mp4,.mov,.mkv"
+               aria-label="Choose video files to upload" />
+        <div class="upload-icon" aria-hidden="true">📤</div>
+        <h3>Drag &amp; drop videos here, or <span class="link">browse</span></h3>
+        <p>MP4, MOV or MKV · up to 1 GB each · you can add several at once</p>
       </div>
-
-      <!-- Selected file info -->
-      <div class="upload-selected hidden" id="upload-selected">
-        <div class="file-info">
-          <div class="file-name" id="file-name-display">—</div>
-          <div class="file-meta" id="file-meta-display">—</div>
-        </div>
-        <button class="btn btn-primary" id="upload-btn" disabled>
-          ⬆ Upload &amp; Transcode
-        </button>
-      </div>
-
-      <!-- Upload progress -->
-      <div class="progress-wrap" id="progress-wrap">
-        <div class="progress-label">
-          <span id="progress-label">Uploading…</span>
-          <span></span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" id="progress-fill"></div>
-        </div>
-      </div>
+      <ul class="upload-list" id="upload-list" aria-live="polite"></ul>
     </section>
 
     <!-- ── Video Library ── -->
-    <section>
+    <section aria-label="Video library">
       <div class="section-header">
-        <h2 class="section-title">
-          🎞 Video Library
-          <span class="badge-count" id="total-count">0</span>
-        </h2>
+        <h2 class="section-title">Video Library</h2>
+        <div class="toolbar">
+          <label class="search">
+            <span class="sr-only">Search videos</span>
+            <input type="search" id="search" placeholder="Search by name or ID…" autocomplete="off" />
+          </label>
+          <label>
+            <span class="sr-only">Filter by status</span>
+            <select id="filter" class="select">
+              <option value="all">All statuses</option>
+              <option value="active">In progress</option>
+              <option value="COMPLETED">Ready</option>
+              <option value="FAILED">Failed</option>
+            </select>
+          </label>
+          <label>
+            <span class="sr-only">Sort videos</span>
+            <select id="sort" class="select">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="name">Name (A–Z)</option>
+              <option value="size">Largest first</option>
+            </select>
+          </label>
+        </div>
       </div>
-      <div class="video-grid" id="video-grid">
-        <!-- Cards injected by app.js -->
-      </div>
+
+      <div class="video-grid" id="video-grid"></div>
+      <div class="empty-state hidden" id="empty-state"></div>
     </section>
   </main>
 
+  <script src="common.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
