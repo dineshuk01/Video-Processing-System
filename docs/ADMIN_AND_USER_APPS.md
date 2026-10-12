@@ -60,7 +60,7 @@ Failed jobs retry automatically up to 3 times (after 15 s, then 45 s, using a qu
 
 ## How videos are encoded
 
-All renditions are produced by a single FFmpeg run, so the source is decoded once instead of once per rendition. Encoding uses the `veryfast` x264 preset (change it with `FFMPEG_PRESET`) and always outputs 8-bit video: browsers cannot play the 10-bit H.264 ("High 10") that 10-bit sources would otherwise produce. Each rendition keeps the source's aspect ratio (only the height is fixed), and audio is mixed down to stereo. The progress bar follows FFmpeg's real position in the video. Encoding time depends on the video's *duration* and your CPU, not its file size: a 3-hour movie takes hours on a laptop CPU.
+All renditions are produced by a single FFmpeg run, so the source is decoded once instead of once per rendition. Encoding uses the `veryfast` x264 preset (change it with `FFMPEG_PRESET`) and always outputs 8-bit video: browsers cannot play the 10-bit H.264 ("High 10") that 10-bit sources would otherwise produce. A size such as "720p" is a class: a video qualifies when it is at least that **wide or tall**, so a 1280×536 widescreen film gets a native 720p. Each rendition fits its 16:9 box while keeping the source's aspect ratio. Sizes the source doesn't reach are skipped (and the log says so) unless **Also create sizes larger than the source** is ticked, which upscales them: no extra detail, slower, more storage. The admin pages list the renditions that were actually made. Audio is mixed down to stereo. The progress bar follows FFmpeg's real position in the video. Encoding time depends on the video's *duration* and your CPU, not its file size: a 3-hour movie takes hours on a laptop CPU.
 
 ## Stopping, pausing and deleting
 

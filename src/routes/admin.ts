@@ -141,8 +141,8 @@ router.post('/videos/:id/publish', async (req: Request, res: Response, next: Nex
 
 router.patch('/videos/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, qualities, autoPublish } = req.body || {};
-    const video = await videoService.updateSettings(req.params.id, { title, qualities, autoPublish });
+    const { title, qualities, autoPublish, allowUpscale } = req.body || {};
+    const video = await videoService.updateSettings(req.params.id, { title, qualities, autoPublish, allowUpscale });
     return ResponseHandler.success(res, withoutEvents(video));
   } catch (err) {
     next(err);

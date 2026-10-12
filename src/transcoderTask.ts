@@ -263,12 +263,17 @@ async function executeTranscoding() {
     await dbService.updateVideo(videoId, { metadata, progress: 8 });
     await log('info', `Source: ${metadata.width}x${metadata.height}, ${metadata.codec}, ${metadata.fps} fps, ${metadata.duration.toFixed(1)}s`);
 
-    // Step C: Determine which HLS variants to generate (Smart Resolution Scaling)
-    const sourceHeight = metadata.height;
-    // Never upscale, and only the renditions the admin asked for
-    const eligibleVariants = HLS_VARIANTS.filter(
-      (v) => v.height <= sourceHeight && (!selectedQualities || selectedQualities.includes(v.height))
-    );
+    // Step C: Decide which renditions to make.
+    const srcW = metadata.width || 1920;
+    const srcH = metadata.height || 1080;
+    const allowUpscale = !!record?.allowUpscale;
+
+    // "720p" is a size class, not a literal height: a 1280-wide widescreen movie is 720p even though
+    // it is only 536 px tall. A class is reached when the source is at least that wide or that tall.
+    const reached = (v: HlsVariant) => srcW >= v.width * 0.98 || srcH >= v.height * 0.98;
+    const wanted = HLS_VARIANTS.filter((v) => !selectedQualities || selectedQualities.includes(v.height));
+    const eligibleVariants = wanted.filter((v) => allowUpscale || reached(v));
+    const skipped = wanted.filter((v) => !eligibleVariants.includes(v));
 
     if (eligibleVariants.length === 0) {
       // Nothing selected fits the source (e.g. only 1080p chosen for a 480p video):
@@ -277,11 +282,13 @@ async function executeTranscoding() {
         ? HLS_VARIANTS.find((v) => v.height === Math.min(...selectedQualities)) || HLS_VARIANTS[0]
         : HLS_VARIANTS[0];
       eligibleVariants.push(fallback);
-      await log('warn', `None of the selected qualities fit a ${sourceHeight}p source. Generating ${fallback.label} instead.`);
+      await log('warn', `None of the selected qualities fit a ${srcW}x${srcH} source. Generating ${fallback.label} instead.`);
+    } else if (skipped.length > 0) {
+      await log('warn', `Skipped ${skipped.map((v) => v.label).join(', ')}: larger than the ${srcW}x${srcH} source. Turn on "Allow upscaling" in the video settings to create them anyway.`);
     }
     await log('info', `Generating renditions: ${eligibleVariants.map((v) => v.label).join(', ')}`);
 
-    Logger.info(`Transcoder Task: Source resolution ${metadata.width}x${sourceHeight}. Generating ${eligibleVariants.length} HLS variant(s): ${eligibleVariants.map(v => v.label).join(', ')}`);
+    Logger.info(`Transcoder Task: Source resolution ${srcW}x${srcH}. Generating ${eligibleVariants.length} HLS variant(s): ${eligibleVariants.map(v => v.label).join(', ')}`);
 
     const gopSize = Math.round((metadata.fps || 30) * 6);
     const watermarkPath = path.join(localDataDir, 'watermark.png');
@@ -290,10 +297,19 @@ async function executeTranscoding() {
       Logger.info(`Transcoder Task: Watermark image found at ${watermarkPath}. Overlaying on video.`);
     }
 
-    // Keep the source's aspect ratio (a 2.39:1 movie must not be stretched to 16:9). Height is
-    // fixed per rendition and the width follows, rounded to an even number as H.264 requires.
-    const aspect = metadata.width && metadata.height ? metadata.width / metadata.height : 16 / 9;
-    const widthOf = (v: HlsVariant) => Math.max(2, Math.round((aspect * v.height) / 2) * 2);
+    // Output size: fit the rendition's 16:9 box while keeping the source's aspect ratio (a 2.39:1 movie
+    // must not be stretched to 16:9), never above the source unless upscaling was asked for.
+    // H.264 needs even dimensions.
+    const aspect = srcW / srcH;
+    const even = (x: number) => Math.max(2, Math.round(x / 2) * 2);
+    const sizeOf = (v: HlsVariant) => {
+      let w = v.width;
+      let h = w / aspect;
+      if (h > v.height) { h = v.height; w = h * aspect; }                  // taller than the box: fit by height
+      if (!allowUpscale && (w > srcW || h > srcH)) { w = srcW; h = srcH; } // keep native size, no upscaling
+      return { w: even(w), h: even(h), upscaled: w > srcW || h > srcH };
+    };
+    const sizes = new Map(eligibleVariants.map((v) => [v.label, sizeOf(v)] as const));
 
     // Step D: Transcode every rendition in a single FFmpeg run. The source is decoded once and
     // split into one scaled copy per rendition; decoding (especially HEVC) is a large share of the work.
@@ -301,13 +317,18 @@ async function executeTranscoding() {
     const ffmpegArgs = ['-y', '-nostdin', '-i', inputFilePath];
     if (hasWatermark) ffmpegArgs.push('-i', watermarkPath);
 
+    // Lanczos keeps upscaled frames as sharp as scaling can make them
+    const scaleFilter = (v: HlsVariant) => {
+      const size = sizes.get(v.label)!;
+      return `scale=${size.w}:${size.h}${size.upscaled ? ':flags=lanczos' : ''}`;
+    };
     const names = (prefix: string) => eligibleVariants.map((_, i) => `[${prefix}${i}]`).join('');
     let graph = `[0:v]split=${n}${names('v')}`;
     if (hasWatermark) graph += `;[1:v]scale=64:-1,split=${n}${names('w')}`;
     eligibleVariants.forEach((v, i) => {
       graph += hasWatermark
-        ? `;[v${i}]scale=-2:${v.height}[s${i}];[s${i}][w${i}]overlay=W-w-10:10[o${i}]`
-        : `;[v${i}]scale=-2:${v.height}[o${i}]`;
+        ? `;[v${i}]${scaleFilter(v)}[s${i}];[s${i}][w${i}]overlay=W-w-10:10[o${i}]`
+        : `;[v${i}]${scaleFilter(v)}[o${i}]`;
     });
     ffmpegArgs.push('-filter_complex', graph, '-progress', 'pipe:1', '-nostats');
 
@@ -413,7 +434,7 @@ Enjoy smooth resolution switching and clear captions!
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
     
     for (const variant of eligibleVariants) {
-      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${widthOf(variant)}x${variant.height}\n`;
+      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${sizes.get(variant.label)!.w}x${sizes.get(variant.label)!.h}\n`;
       masterPlaylistContent += `playlist_${variant.label}.m3u8\n`;
     }
 
@@ -483,6 +504,7 @@ Enjoy smooth resolution switching and clear captions!
       hlsPlaylistUrl,
       thumbnailUrl,
       subtitleUrl,
+      renditions: eligibleVariants.map((v) => v.label),
       ...(record?.autoPublish ? { published: true } : {}),
     });
     await log('info', 'Processing complete');

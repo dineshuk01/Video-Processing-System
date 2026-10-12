@@ -21,7 +21,16 @@
   const durationOf = (v) => (v.metadata && v.metadata.duration ? formatDuration(v.metadata.duration) : '—');
   const isActive = (v) => VF.ACTIVE_STATUSES.includes(v.status);
   const watchHref = (v) => (v.status === 'COMPLETED' ? `#/watch/${encodeURIComponent(v.id)}` : '#/jobs');
-  const renditionsOf = (v) => (v.qualities && v.qualities.length ? v.qualities.map((q) => `${q}p`).join(', ') : 'All');
+  // What processing actually produced. Before a video has been processed, show what was asked for.
+  const requestedOf = (v) => (v.qualities && v.qualities.length ? v.qualities : [360, 480, 720, 1080]).map((q) => `${q}p`);
+  const renditionsOf = (v) => (v.renditions && v.renditions.length
+    ? v.renditions.join(', ')
+    : v.status === 'COMPLETED' ? '—' : `${requestedOf(v).join(', ')} (planned)`);
+  const skippedOf = (v) => (v.renditions && v.renditions.length ? requestedOf(v).filter((r) => !v.renditions.includes(r)) : []);
+  // Size classes: a video reaches a class when it is at least that wide or that tall
+  const CLASS_WIDTH = { 360: 640, 480: 854, 720: 1280, 1080: 1920 };
+  const reachesClass = (v, q) => !v.metadata || !v.metadata.width
+    || v.metadata.width >= CLASS_WIDTH[q] * 0.98 || v.metadata.height >= q * 0.98;
 
   const visibilityPill = (v) => (v.status !== 'COMPLETED'
     ? '<span class="muted">—</span>'
@@ -238,8 +247,10 @@
             <input class="input" name="title" maxlength="120" value="${esc(v.title || '')}" placeholder="${esc(v.originalName)}" />
             <small>Shown on the public site. Leave empty to use the file name.</small></label>
           <fieldset class="field"><legend>Output qualities</legend>
-            ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" ${selected.includes(q) ? 'checked' : ''} /> ${q}p</label>`).join('')}
-            <small>Applied the next time this video is processed. Sizes above the source (${esc(qualityOf(v))}) are skipped.</small></fieldset>
+            ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" ${selected.includes(q) ? 'checked' : ''} /> ${q}p${reachesClass(v, q) ? '' : ' <span class="muted">— larger than the source, needs upscaling</span>'}</label>`).join('')}
+            <small>Applied the next time this video is processed.${v.metadata ? ` The source is ${esc(v.metadata.width)}×${esc(v.metadata.height)}.` : ''}</small></fieldset>
+          <label class="check"><input type="checkbox" name="allowUpscale" ${v.allowUpscale ? 'checked' : ''} /> Also create sizes larger than the source</label>
+          <small class="muted">Upscaled sizes add no real detail, take longer to encode and use more storage.</small>
           <label class="check"><input type="checkbox" name="autoPublish" ${v.autoPublish ? 'checked' : ''} /> Publish automatically when processing finishes</label>
           <div class="alert-box hidden" id="edit-error"></div>
           <div class="modal-actions">
@@ -256,6 +267,7 @@
       title: form.title.value.trim(),
       qualities: [...form.querySelectorAll('input[name="quality"]:checked')].map((el) => Number(el.value)),
       autoPublish: form.autoPublish.checked,
+      allowUpscale: form.allowUpscale.checked,
     });
     async function save(reprocess) {
       const values = read();
@@ -299,7 +311,8 @@
         ${kv('Status', pill(v.status))}
         ${kv('Progress', `${Math.round(v.status === 'COMPLETED' ? 100 : v.progress || 0)}% · ${esc(phaseOf(v))}`)}
         ${kv('Attempts', `${v.attempts || 0}${v.attempts ? ` (up to ${MAX_ATTEMPTS} per run)` : ''}`)}
-        ${kv('Renditions', esc(renditionsOf(v)))}
+        ${kv('Renditions made', esc(renditionsOf(v)))}
+        ${skippedOf(v).length ? `<div class="alert-box">Not made: ${esc(skippedOf(v).join(', '))}. They are larger than the source${v.metadata ? ` (${esc(v.metadata.width)}×${esc(v.metadata.height)})` : ''}. To create them anyway, open <strong>Edit settings</strong>, tick <em>Also create sizes larger than the source</em> and reprocess.</div>` : ''}
         ${kv('Started', esc(formatDate(started)))}
         ${v.completedAt ? kv('Completed', esc(formatDate(v.completedAt))) : ''}
         ${v.failedAt ? kv('Failed', esc(formatDate(v.failedAt))) : ''}

@@ -77,6 +77,7 @@ export class VideoService {
     title?: unknown;
     qualities?: unknown;
     autoPublish?: unknown;
+    allowUpscale?: unknown;
   }): Promise<{ videoId: string; uploadUrl: string; key: string; expiresIn: number }> {
     const sanitizedName = this.sanitizeFilename(params.filename);
     const contentTypeLower = params.contentType.toLowerCase();
@@ -112,6 +113,7 @@ export class VideoService {
       title,
       qualities,
       autoPublish: params.autoPublish === true,
+      allowUpscale: params.allowUpscale === true,
     });
 
     // 4. Generate S3 presigned URL
@@ -189,7 +191,7 @@ export class VideoService {
     return updated;
   }
 
-  async updateSettings(id: string, input: { title?: unknown; qualities?: unknown; autoPublish?: unknown }): Promise<VideoRecord> {
+  async updateSettings(id: string, input: { title?: unknown; qualities?: unknown; autoPublish?: unknown; allowUpscale?: unknown }): Promise<VideoRecord> {
     const video = await dbService.getVideo(id);
     if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
 
@@ -206,6 +208,10 @@ export class VideoService {
     if (input.autoPublish !== undefined) {
       updates.autoPublish = input.autoPublish === true;
       changes.push('auto-publish');
+    }
+    if (input.allowUpscale !== undefined) {
+      updates.allowUpscale = input.allowUpscale === true;
+      changes.push('upscaling (applied the next time the video is processed)');
     }
     if (changes.length === 0) return video;
     const updated = await dbService.updateVideo(id, updates);
@@ -253,6 +259,7 @@ export class VideoService {
       hlsPlaylistUrl: undefined,
       thumbnailUrl: undefined,
       subtitleUrl: undefined,
+      renditions: undefined,
     });
     await dbService.appendEvent(id, 'warn', 'Processed files deleted by an admin. The original is kept; resume to process it again.');
     return updated;
@@ -283,6 +290,7 @@ export class VideoService {
       hlsPlaylistUrl: undefined,
       thumbnailUrl: undefined,
       subtitleUrl: undefined,
+      renditions: undefined,
       qualities,
     });
     const verb = video.status === VideoStatus.PAUSED ? 'Resumed' : 'Retry requested';

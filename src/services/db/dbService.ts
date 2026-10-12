@@ -42,6 +42,7 @@ export interface CreateVideoParams {
   title?: string;
   qualities?: number[];
   autoPublish?: boolean;
+  allowUpscale?: boolean;
 }
 
 export class DbService {
@@ -106,6 +107,7 @@ export class DbService {
         published: false,
         autoPublish: !!params.autoPublish,
         qualities: params.qualities,
+        allowUpscale: !!params.allowUpscale,
         attempts: 0,
         events: [{ at: now, level: 'info', message: 'Upload started' }],
         progress: 0,

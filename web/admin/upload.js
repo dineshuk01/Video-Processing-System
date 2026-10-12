@@ -62,7 +62,7 @@
     try {
       const { videoId, uploadUrl } = await post('/api/admin/upload/initiate', {
         filename: item.file.name, contentType: item.type, fileSize: item.file.size,
-        qualities: item.options.qualities, autoPublish: item.options.autoPublish,
+        qualities: item.options.qualities, autoPublish: item.options.autoPublish, allowUpscale: item.options.allowUpscale,
       });
       item.videoId = videoId;
       if (item.cancelled) throw new Error('cancelled');
@@ -113,7 +113,7 @@
           toast(`"${file.name}" is ${formatBytes(file.size)}. The limit is ${formatBytes(VF.config.maxUploadBytes)}.`, 'error');
           continue;
         }
-        uploads.items.push({ id: ++seq, file, type, state: 'staged', pct: 0, loaded: 0, speed: 0, eta: Infinity, error: '', videoId: null, xhr: null, cancelled: false, options: { qualities: QUALITIES, autoPublish: false } });
+        uploads.items.push({ id: ++seq, file, type, state: 'staged', pct: 0, loaded: 0, speed: 0, eta: Infinity, error: '', videoId: null, xhr: null, cancelled: false, options: { qualities: QUALITIES, autoPublish: false, allowUpscale: false } });
       }
       emit();
     },
@@ -215,7 +215,8 @@
             <fieldset class="opt">
               <legend>Output Qualities</legend>
               ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" checked /> ${q}p</label>`).join('')}
-              <p class="opt-note" id="quality-note">Sizes larger than the source video are skipped automatically.</p>
+              <label class="check"><input type="checkbox" id="allow-upscale" /> Also create sizes larger than the source</label>
+              <p class="opt-note" id="quality-note">A size is made when the video is at least that wide or tall, so widescreen 1280-wide films get a native 720p. Larger sizes are skipped unless you tick the box above. They are upscaled, so no extra detail, and take longer and use more storage.</p>
             </fieldset>
             <div class="opt">
               <span class="opt-label">Publishing</span>
@@ -258,11 +259,11 @@
           note.classList.add('err-text');
           return;
         }
-        uploads.startStaged({ qualities, autoPublish: root.querySelector('#auto-publish').checked });
+        uploads.startStaged({ qualities, autoPublish: root.querySelector('#auto-publish').checked, allowUpscale: root.querySelector('#allow-upscale').checked });
       });
       root.querySelector('.opts').addEventListener('change', () => {
         const note = root.querySelector('#quality-note');
-        note.textContent = 'Sizes larger than the source video are skipped automatically.';
+        note.textContent = 'A size is made when the video is at least that wide or tall, so widescreen 1280-wide films get a native 720p. Larger sizes are skipped unless you tick the box above. They are upscaled, so no extra detail, and take longer and use more storage.';
         note.classList.remove('err-text');
       });
       root.querySelector('#clear-done').addEventListener('click', () => uploads.clearFinished());

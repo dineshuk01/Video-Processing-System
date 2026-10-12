@@ -36,6 +36,8 @@ export interface VideoRecord {
   publishedAt?: string;
   autoPublish?: boolean;           // publish automatically when processing completes
   qualities?: number[];            // renditions to generate; all when omitted
+  allowUpscale?: boolean;          // also make sizes larger than the source (no extra detail, bigger files)
+  renditions?: string[];           // what processing actually produced, e.g. ['360p', '480p']
   attempts?: number;               // processing attempts so far
   events?: VideoEvent[];           // processing log (capped)
   rawObjectKey?: string;
