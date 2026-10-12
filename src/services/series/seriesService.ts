@@ -6,11 +6,25 @@ import { JsonFileStore } from '../../utils/jsonFileStore';
 export const MAX_SEASON = 99;
 export const MAX_EPISODE = 9999;
 
-// Series are stored in series.json next to db.json (local mode). Created on first use so AWS-only
-// deployments don't create local files. A DynamoDB version belongs with the other AWS services.
-let store: JsonFileStore<Series> | null = null;
-const getStore = () =>
-  (store ||= new JsonFileStore<Series>(path.join(path.resolve(process.env.LOCAL_DATA_DIR || './data'), 'series.json')));
+// Local mode keeps series in series.json next to db.json; AWS keeps them in the DynamoDB table. Created on
+// first use so each mode only touches its own storage.
+interface SeriesStore {
+  read(): Promise<Series[]>;
+  transaction<R>(fn: (items: Series[]) => { result: R; write: boolean }): Promise<R>;
+}
+
+let store: SeriesStore | null = null;
+function getStore(): SeriesStore {
+  if (!store) {
+    if (process.env.PROVIDER === 'aws') {
+      const { DynamoSeriesStore } = require('./dynamoSeriesStore');
+      store = new DynamoSeriesStore();
+    } else {
+      store = new JsonFileStore<Series>(path.join(path.resolve(process.env.LOCAL_DATA_DIR || './data'), 'series.json'));
+    }
+  }
+  return store!;
+}
 
 export function parseSeasonNumber(value: unknown): number {
   const n = Number(value);

@@ -7,7 +7,11 @@ import { Logger } from './utils/logger';
 dotenv.config();
 
 let running = true;
-let isProcessingActive = false;
+let activeJobs = 0;
+
+// How many videos are processed at the same time. On AWS each job just starts an ECS task and waits for it,
+// so several can run side by side; locally every job uses this computer's CPU, so the default is one.
+const concurrency = Math.min(10, Math.max(1, parseInt(process.env.WORKER_CONCURRENCY || '', 10) || 1));
 
 // 1. Validate Environment Variables
 function validateEnv() {
@@ -59,10 +63,10 @@ const queueUrl =
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 2. Main Polling Loop
-async function pollQueue() {
+// 2. Main Polling Loop (one loop per concurrent job)
+async function pollQueue(slot: number) {
   const queue = getQueueService();
-  Logger.info(`Background worker initialized and polling queue`, {
+  Logger.info(`Background worker ${slot}/${concurrency} initialized and polling queue`, {
     provider: process.env.PROVIDER,
     queue: queueUrl,
   });
@@ -74,14 +78,14 @@ async function pollQueue() {
 
       if (messages.length > 0) {
         const message = messages[0];
-        isProcessingActive = true;
-        
+        activeJobs++;
+
         try {
           await jobProcessor.processJob(message.ReceiptHandle, message.Body, queueUrl);
         } catch (jobErr: any) {
           Logger.error('Error during message processing', jobErr.message);
         } finally {
-          isProcessingActive = false;
+          activeJobs--;
         }
       } else {
         // No messages, sleep for 2 seconds before polling again
@@ -95,10 +99,12 @@ async function pollQueue() {
 }
 
 // Start polling
-pollQueue().catch((err) => {
-  Logger.error('Fatal worker loop exception', err);
-  process.exit(1);
-});
+for (let slot = 1; slot <= concurrency; slot++) {
+  pollQueue(slot).catch((err) => {
+    Logger.error('Fatal worker loop exception', err);
+    process.exit(1);
+  });
+}
 
 // 3. Graceful Shutdown Handlers
 async function handleGracefulShutdown(signal: string) {
@@ -109,13 +115,13 @@ async function handleGracefulShutdown(signal: string) {
   let checkAttempts = 0;
   const maxAttempts = 20; // 10 seconds total
 
-  while (isProcessingActive && checkAttempts < maxAttempts) {
+  while ((activeJobs > 0) && checkAttempts < maxAttempts) {
     checkAttempts++;
     Logger.info(`Waiting for active job to complete (attempt ${checkAttempts}/${maxAttempts})...`);
     await sleep(500);
   }
 
-  if (isProcessingActive) {
+  if ((activeJobs > 0)) {
     Logger.error('Forced shutdown: Worker did not complete processing in time.');
     process.exit(1);
   } else {
