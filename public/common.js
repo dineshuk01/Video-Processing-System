@@ -113,6 +113,56 @@
     });
   }
 
+  // ─── Generic dialog (job details etc.) ──────────────────────
+  function dialog({ title, html, wide = false }) {
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal ${wide ? 'modal-wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+        <div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+        <div class="modal-body">${html}</div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+    overlay.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) close(); });
+    overlay.querySelector('[data-close]').focus();
+    return { el: overlay, close };
+  }
+
+  // Keyed list reconciliation: only rows whose HTML changed are replaced, so live progress
+  // updates don't re-create thumbnails or restart animations on every event.
+  function reconcile(container, items, { key, html }) {
+    const existing = new Map([...container.children].filter((c) => c.__key !== undefined).map((c) => [c.__key, c]));
+    const parent = document.createElement(container.tagName === 'TBODY' ? 'tbody' : 'div');
+    const ordered = [];
+    for (const item of items) {
+      const k = key(item);
+      const markup = html(item).trim();
+      let el = existing.get(k);
+      if (el && el.__sig === markup) {
+        existing.delete(k);
+      } else {
+        parent.innerHTML = markup;
+        const fresh = parent.firstElementChild;
+        fresh.__key = k;
+        fresh.__sig = markup;
+        if (el) { el.replaceWith(fresh); existing.delete(k); }
+        el = fresh;
+      }
+      ordered.push(el);
+    }
+    existing.forEach((el) => el.remove());
+    ordered.forEach((el, i) => { if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null); });
+  }
+
   async function copyText(text, successMessage = 'Copied to clipboard') {
     try {
       await navigator.clipboard.writeText(text);
@@ -124,6 +174,6 @@
 
   window.VF = {
     esc, formatBytes, formatDate, timeAgo, formatDuration, formatEta,
-    toast, confirmDialog, copyText,
+    toast, confirmDialog, dialog, reconcile, copyText,
   };
 })();

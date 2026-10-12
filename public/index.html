@@ -3,97 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#0a0c15" />
-  <title>VideoFlow — Video Processing Dashboard</title>
-  <meta name="description" content="Upload, transcode, and stream adaptive HLS videos with VideoFlow." />
+  <meta name="theme-color" content="#0b1220" />
+  <title>VideoStream</title>
+  <meta name="description" content="Upload, transcode and stream adaptive HLS videos." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="app.css" />
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🎬</text></svg>" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%232563eb'/><path d='M9 7l8 5-8 5z' fill='white'/></svg>" />
+  <!-- Hls.js (pinned version) -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#view">Skip to content</a>
+  <div class="scrim" id="scrim"></div>
 
-  <!-- ── Header ── -->
-  <header class="header">
-    <a class="header-brand" href="/">
-      <div class="logo-icon" aria-hidden="true">🎬</div>
-      VideoFlow
-    </a>
-    <div class="header-right">
-      <a class="header-link" href="/api/docs" target="_blank" rel="noopener">API Docs</a>
-      <div class="conn conn-connecting" id="conn" role="status" aria-live="polite">
-        <span class="conn-dot" aria-hidden="true"></span>
-        <span id="conn-label">Connecting…</span>
+  <div class="shell">
+    <!-- ── Sidebar ── -->
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+      <a class="brand" href="#/dashboard">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg></span>
+        VideoStream
+      </a>
+
+      <nav class="nav">
+        <a class="nav-item" href="#/dashboard" data-nav="dashboard"><span class="ico" data-icon="home"></span>Dashboard</a>
+        <a class="nav-item" href="#/upload" data-nav="upload"><span class="ico" data-icon="upload"></span>Upload Video<span class="nav-badge hidden" id="nav-upload-badge"></span></a>
+        <a class="nav-item" href="#/videos" data-nav="videos"><span class="ico" data-icon="film"></span>My Videos</a>
+        <span class="nav-item nav-disabled" aria-disabled="true" title="Live streaming is not available yet"><span class="ico" data-icon="radio"></span>Live Streams<span class="nav-soon">Soon</span></span>
+        <a class="nav-item" href="#/jobs" data-nav="jobs"><span class="ico" data-icon="jobs"></span>Processing Jobs<span class="nav-badge hidden" id="nav-jobs-badge"></span></a>
+        <a class="nav-item" href="#/settings" data-nav="settings"><span class="ico" data-icon="settings"></span>Settings</a>
+      </nav>
+
+      <div class="sys" id="sys" role="status" aria-live="polite">
+        <div class="sys-state"><span class="sys-dot"></span><span id="sys-label">Checking…</span></div>
+        <div class="sys-detail" id="sys-detail"></div>
       </div>
-    </div>
-  </header>
+    </aside>
 
-  <!-- ── Main ── -->
-  <main class="container" id="main">
-    <div class="hero">
-      <h1 class="page-title">Video Processing Dashboard</h1>
-      <p class="page-subtitle">Upload a video and it is automatically transcoded into adaptive HLS streams.</p>
-    </div>
-
-    <!-- ── Stats ── -->
-    <section class="stats" aria-label="Library summary">
-      <div class="stat"><span class="stat-value" id="stat-total">0</span><span class="stat-label">Total videos</span></div>
-      <div class="stat stat-processing"><span class="stat-value" id="stat-processing">0</span><span class="stat-label">In progress</span></div>
-      <div class="stat stat-completed"><span class="stat-value" id="stat-completed">0</span><span class="stat-label">Ready to watch</span></div>
-      <div class="stat stat-failed"><span class="stat-value" id="stat-failed">0</span><span class="stat-label">Failed</span></div>
-    </section>
-
-    <!-- ── Upload Section ── -->
-    <section class="upload-section" aria-label="Upload videos">
-      <div class="upload-zone" id="upload-zone">
-        <input type="file" id="file-input" multiple
-               accept="video/mp4,video/quicktime,video/x-matroska,.mp4,.mov,.mkv"
-               aria-label="Choose video files to upload" />
-        <div class="upload-icon" aria-hidden="true">📤</div>
-        <h3>Drag &amp; drop videos here, or <span class="link">browse</span></h3>
-        <p>MP4, MOV or MKV · up to 1 GB each · you can add several at once</p>
-      </div>
-      <ul class="upload-list" id="upload-list" aria-live="polite"></ul>
-    </section>
-
-    <!-- ── Video Library ── -->
-    <section aria-label="Video library">
-      <div class="section-header">
-        <h2 class="section-title">Video Library</h2>
-        <div class="toolbar">
-          <label class="search">
-            <span class="sr-only">Search videos</span>
-            <input type="search" id="search" placeholder="Search by name or ID…" autocomplete="off" />
-          </label>
-          <label>
-            <span class="sr-only">Filter by status</span>
-            <select id="filter" class="select">
-              <option value="all">All statuses</option>
-              <option value="active">In progress</option>
-              <option value="COMPLETED">Ready</option>
-              <option value="FAILED">Failed</option>
-            </select>
-          </label>
-          <label>
-            <span class="sr-only">Sort videos</span>
-            <select id="sort" class="select">
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-              <option value="name">Name (A–Z)</option>
-              <option value="size">Largest first</option>
-            </select>
-          </label>
+    <!-- ── Main column ── -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open navigation"><span class="ico" data-icon="menu"></span></button>
+        <label class="topsearch">
+          <span class="sr-only">Search videos</span>
+          <span class="ico" data-icon="search"></span>
+          <input type="search" id="global-search" placeholder="Search videos…" autocomplete="off" />
+        </label>
+        <div class="topbar-right">
+          <div class="conn conn-connecting" id="conn" role="status" title="Live updates connection">
+            <span class="conn-dot" aria-hidden="true"></span><span id="conn-label">Connecting…</span>
+          </div>
+          <div class="bell-wrap">
+            <button class="icon-btn bell" id="bell" aria-label="Notifications" aria-expanded="false" aria-haspopup="true">
+              <span class="ico" data-icon="bell"></span><span class="bell-badge hidden" id="bell-badge">0</span>
+            </button>
+            <div class="popover hidden" id="bell-pop" role="dialog" aria-label="Notifications"></div>
+          </div>
+          <div class="user"><span class="avatar" id="avatar" aria-hidden="true">D</span><span class="user-name" id="user-name">Dinesh</span></div>
         </div>
-      </div>
+      </header>
 
-      <div class="video-grid" id="video-grid"></div>
-      <div class="empty-state hidden" id="empty-state"></div>
-    </section>
-  </main>
+      <main class="content" id="view" tabindex="-1"></main>
+    </div>
+  </div>
 
   <script src="common.js"></script>
   <script src="app.js"></script>
+  <script src="upload.js"></script>
+  <script src="views.js"></script>
+  <script>VF.start();</script>
 </body>
 </html>

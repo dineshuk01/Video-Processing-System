@@ -1,526 +1,354 @@
 /* ============================================================
-   VideoFlow — Dashboard logic (library, live updates, uploads)
-   Depends on common.js (window.VF)
+   VideoStream — app core: store, live updates (SSE), router,
+   notifications, system status. Depends on common.js.
+   Pages live in upload.js and views.js.
    ============================================================ */
-const { esc, formatBytes, timeAgo, formatDuration, formatEta, toast, confirmDialog, copyText } = window.VF;
+(function () {
+  const VF = window.VF;
+  const { esc, toast, timeAgo } = VF;
 
-// Mirrors the server default (MAX_UPLOAD_SIZE_MB=1000) and ALLOWED_MIME_TYPES
-const MAX_UPLOAD_BYTES = 1000 * 1024 * 1024;
-const MIME_BY_EXT = { mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska' };
-const ACTIVE_STATUSES = ['PENDING', 'UPLOADING', 'UPLOADED', 'PROCESSING'];
-
-// ─── State ──────────────────────────────────────────────────
-const state = {
-  videos: {},          // videoId -> VideoRecord
-  cards: {},           // videoId -> card element
-  deleted: new Set(),  // ids deleted locally, so a late SSE event can't resurrect the card
-  loaded: false,
-  uploads: new Set(),  // in-flight upload items
-  view: { search: '', filter: 'all', sort: 'newest' },
-};
-let uploadSeq = 0;
-
-// ─── DOM refs ───────────────────────────────────────────────
-const $ = (id) => document.getElementById(id);
-const uploadZone = $('upload-zone');
-const fileInput  = $('file-input');
-const uploadList = $('upload-list');
-const videoGrid  = $('video-grid');
-const emptyState = $('empty-state');
-const searchEl   = $('search');
-const filterEl   = $('filter');
-const sortEl     = $('sort');
-const connEl     = $('conn');
-const connLabel  = $('conn-label');
-
-// ─── Persisted view preferences (best effort) ───────────────
-try {
-  const saved = JSON.parse(localStorage.getItem('vf-view') || '{}');
-  if (saved.filter) state.view.filter = saved.filter;
-  if (saved.sort) state.view.sort = saved.sort;
-} catch { /* storage unavailable */ }
-filterEl.value = state.view.filter;
-sortEl.value = state.view.sort;
-if (filterEl.value !== state.view.filter) filterEl.value = state.view.filter = 'all';
-if (sortEl.value !== state.view.sort) sortEl.value = state.view.sort = 'newest';
-
-function savePrefs() {
-  try {
-    localStorage.setItem('vf-view', JSON.stringify({ filter: state.view.filter, sort: state.view.sort }));
-  } catch { /* ignore */ }
-}
-
-// ─── Video cards ────────────────────────────────────────────
-const STATUS_LABEL = {
-  PENDING: 'Pending', UPLOADING: 'Uploading', UPLOADED: 'Queued',
-  PROCESSING: 'Processing', COMPLETED: 'Ready', FAILED: 'Failed',
-};
-
-// Progress milestones come from transcoderTask.ts
-function phaseText(progress) {
-  if (progress < 10) return 'Preparing video';
-  if (progress <= 80) return 'Encoding resolutions';
-  if (progress < 91) return 'Creating thumbnail & captions';
-  return 'Publishing files';
-}
-
-function progressHtml(v) {
-  const progress = Math.round(v.progress || 0);
-  switch (v.status) {
-    case 'PENDING':
-    case 'UPLOADING':
-      return `<div class="card-progress"><div class="card-progress-label"><span>Waiting for the upload to finish…</span></div>
-        <div class="card-progress-track indeterminate"><div class="card-progress-fill fill-idle"></div></div></div>`;
-    case 'UPLOADED':
-      return `<div class="card-progress"><div class="card-progress-label"><span>In queue — waiting for a transcoder</span></div>
-        <div class="card-progress-track indeterminate"><div class="card-progress-fill fill-idle"></div></div></div>`;
-    case 'PROCESSING':
-      return `<div class="card-progress"><div class="card-progress-label"><span>${phaseText(progress)}…</span><span>${progress}%</span></div>
-        <div class="card-progress-track"><div class="card-progress-fill fill-processing" style="width:${progress}%"></div></div></div>`;
-    case 'FAILED':
-      return v.error ? `<div class="error-text" title="${esc(v.error)}">${esc(v.error)}</div>` : '';
-    default:
-      return '';
-  }
-}
-
-function posterHtml(v) {
-  const ready = v.status === 'COMPLETED';
-  const dur = v.metadata && v.metadata.duration ? formatDuration(v.metadata.duration) : '';
-  const res = v.metadata && v.metadata.height ? `${v.metadata.height}p` : '';
-  const inner = `
-    ${v.thumbnailUrl
-      ? `<img src="${esc(v.thumbnailUrl)}" alt="" loading="lazy" />`
-      : `<span class="poster-placeholder" aria-hidden="true">🎬</span>`}
-    ${ready ? '<span class="play-overlay" aria-hidden="true"><span>▶</span></span>' : ''}
-    ${res ? `<span class="badge-res">${esc(res)}</span>` : ''}
-    ${dur ? `<span class="badge-dur">${esc(dur)}</span>` : ''}`;
-  return ready
-    ? `<a class="card-poster" href="player.html?id=${encodeURIComponent(v.id)}" aria-label="Watch ${esc(v.originalName)}">${inner}</a>`
-    : `<div class="card-poster">${inner}</div>`;
-}
-
-function renderCardHtml(v) {
-  const ready = v.status === 'COMPLETED';
-  return `
-    ${posterHtml(v)}
-    <div class="card-body">
-      <div class="card-header">
-        <div class="card-title">
-          <div class="card-filename" title="${esc(v.originalName)}">${esc(v.originalName)}</div>
-          <div class="card-id">${esc(v.id)}</div>
-        </div>
-        <span class="status-badge status-${esc(v.status)}">${esc(STATUS_LABEL[v.status] || v.status)}</span>
-      </div>
-      ${progressHtml(v)}
-      <div class="card-meta">
-        <span>${formatBytes(v.fileSize)}</span>
-        <span aria-hidden="true">·</span>
-        <span data-ago="${esc(v.createdAt)}" title="${esc(new Date(v.createdAt).toLocaleString())}">${timeAgo(v.createdAt)}</span>
-      </div>
-      <div class="card-footer">
-        <button class="btn btn-ghost btn-sm btn-danger-text" data-action="delete" data-id="${esc(v.id)}">Delete</button>
-        <div class="card-footer-right">
-          ${ready && v.hlsPlaylistUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy" data-url="${esc(v.hlsPlaylistUrl)}">Copy stream URL</button>` : ''}
-          ${ready ? `<a class="btn btn-watch btn-sm" href="player.html?id=${encodeURIComponent(v.id)}">▶ Watch</a>` : ''}
-        </div>
-      </div>
-    </div>`;
-}
-
-function upsertCard(video, { defer = false } = {}) {
-  if (state.deleted.has(video.id)) return;
-  state.videos[video.id] = video;
-
-  const existing = state.cards[video.id];
-  const el = document.createElement('article');
-  el.className = `video-card${existing ? ' no-anim' : ''}`; // only animate on first appearance
-  el.id = `card-${video.id}`;
-  el.dataset.status = video.status;
-  el.innerHTML = renderCardHtml(video);
-
-  if (existing) existing.replaceWith(el);
-  else videoGrid.appendChild(el);
-  state.cards[video.id] = el;
-
-  if (!defer) applyView();
-}
-
-function removeCard(id) {
-  delete state.videos[id];
-  const el = state.cards[id];
-  if (el) {
-    el.classList.add('leaving');
-    setTimeout(() => el.remove(), 200);
-  }
-  delete state.cards[id];
-  applyView();
-}
-
-// ─── Filtering, sorting, stats ──────────────────────────────
-function matches(v) {
-  const { search, filter } = state.view;
-  if (filter === 'active' && !ACTIVE_STATUSES.includes(v.status)) return false;
-  if ((filter === 'COMPLETED' || filter === 'FAILED') && v.status !== filter) return false;
-  if (search) {
-    const q = search.toLowerCase();
-    if (!v.originalName.toLowerCase().includes(q) && !v.id.toLowerCase().includes(q)) return false;
-  }
-  return true;
-}
-
-const SORTERS = {
-  newest: (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
-  oldest: (a, b) => new Date(a.createdAt) - new Date(b.createdAt),
-  name:   (a, b) => a.originalName.localeCompare(b.originalName),
-  size:   (a, b) => (b.fileSize || 0) - (a.fileSize || 0),
-};
-
-function applyView() {
-  const all = Object.values(state.videos);
-  const sorted = all.slice().sort(SORTERS[state.view.sort] || SORTERS.newest);
-
-  let visible = 0;
-  for (const v of sorted) {
-    const el = state.cards[v.id];
-    if (!el) continue;
-    const show = matches(v);
-    el.hidden = !show;
-    if (show) visible++;
-    videoGrid.appendChild(el); // appending an existing node moves it, giving us the sort order
-  }
-
-  // Stats
-  const count = (fn) => all.filter(fn).length;
-  const processing = count((v) => ACTIVE_STATUSES.includes(v.status));
-  $('stat-total').textContent = all.length;
-  $('stat-processing').textContent = processing;
-  $('stat-completed').textContent = count((v) => v.status === 'COMPLETED');
-  $('stat-failed').textContent = count((v) => v.status === 'FAILED');
-  document.title = processing > 0 ? `(${processing}) VideoFlow — Dashboard` : 'VideoFlow — Video Processing Dashboard';
-
-  renderEmptyState(all.length, visible);
-}
-
-function renderEmptyState(total, visible) {
-  if (!state.loaded || visible > 0) {
-    emptyState.classList.add('hidden');
-    return;
-  }
-  emptyState.classList.remove('hidden');
-  if (total === 0) {
-    emptyState.innerHTML = `
-      <div class="empty-icon" aria-hidden="true">🎥</div>
-      <h3>No videos yet</h3>
-      <p>Drop your first video above and it will show up here with live progress.</p>`;
-  } else {
-    emptyState.innerHTML = `
-      <div class="empty-icon" aria-hidden="true">🔍</div>
-      <h3>No matching videos</h3>
-      <p>Try a different search or filter.</p>
-      <button class="btn btn-ghost" id="clear-filters">Clear filters</button>`;
-  }
-}
-
-emptyState.addEventListener('click', (e) => {
-  if (e.target.id !== 'clear-filters') return;
-  searchEl.value = '';
-  filterEl.value = 'all';
-  state.view.search = '';
-  state.view.filter = 'all';
-  savePrefs();
-  applyView();
-});
-
-let searchTimer;
-searchEl.addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { state.view.search = searchEl.value.trim(); applyView(); }, 150);
-});
-filterEl.addEventListener('change', () => { state.view.filter = filterEl.value; savePrefs(); applyView(); });
-sortEl.addEventListener('change', () => { state.view.sort = sortEl.value; savePrefs(); applyView(); });
-
-// Keep "5 min ago" labels fresh
-setInterval(() => {
-  document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = timeAgo(el.dataset.ago); });
-}, 30000);
-
-// ─── Card actions (event delegation) ────────────────────────
-videoGrid.addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-action]');
-  if (!btn) return;
-  if (btn.dataset.action === 'copy') return copyText(btn.dataset.url, 'Stream URL copied');
-  if (btn.dataset.action === 'delete') return deleteVideo(btn.dataset.id);
-});
-
-// A broken thumbnail should fall back to the placeholder instead of showing a broken image
-videoGrid.addEventListener('error', (e) => {
-  if (e.target.tagName === 'IMG') {
-    const placeholder = document.createElement('span');
-    placeholder.className = 'poster-placeholder';
-    placeholder.textContent = '🎬';
-    e.target.replaceWith(placeholder);
-  }
-}, true);
-
-async function deleteVideo(id) {
-  const video = state.videos[id];
-  const ok = await confirmDialog({
-    title: 'Delete this video?',
-    message: `"${video ? video.originalName : id}" and all of its transcoded files will be permanently removed.`,
-    confirmText: 'Delete',
-    danger: true,
-  });
-  if (!ok) return;
-
-  try {
-    const res = await fetch(`/api/videos/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error?.message || 'Delete failed');
-    state.deleted.add(id);
-    removeCard(id);
-    toast('Video deleted', 'success');
-  } catch (err) {
-    toast(`Failed to delete video: ${err.message}`, 'error');
-  }
-}
-
-// ─── Live updates (SSE) with polling fallback ───────────────
-function setConn(kind, label) {
-  connEl.className = `conn conn-${kind}`;
-  connLabel.textContent = label;
-}
-
-function showSkeletons() {
-  videoGrid.innerHTML = Array.from({ length: 3 }, () => `
-    <div class="video-card skeleton" aria-hidden="true">
-      <div class="card-poster"></div>
-      <div class="card-body"><div class="sk-line w60"></div><div class="sk-line w40"></div><div class="sk-line w80"></div></div>
-    </div>`).join('');
-}
-
-function loadAll(videos) {
-  videoGrid.innerHTML = '';
-  state.cards = {};
-  state.videos = {};
-  videos.forEach((v) => upsertCard(v, { defer: true }));
-  state.loaded = true;
-  applyView();
-}
-
-let fallbackStarted = false;
-async function loadViaFetch() {
-  if (state.loaded || fallbackStarted) return;
-  fallbackStarted = true;
-  try {
-    const res = await fetch('/api/videos?page=1&limit=100');
-    const json = await res.json();
-    if (json.success) loadAll(json.data.videos);
-  } catch { /* SSE reconnect will retry */ }
-  fallbackStarted = false;
-}
-
-function initSSE() {
-  showSkeletons();
-  const source = new EventSource('/api/events');
-
-  source.addEventListener('initial-load', (e) => loadAll(JSON.parse(e.data)));
-  source.addEventListener('video-update', (e) => {
-    if (!state.loaded) return;
-    upsertCard(JSON.parse(e.data));
-  });
-
-  source.onopen = () => setConn('live', 'Live');
-  source.onerror = () => {
-    setConn('offline', 'Reconnecting…');
-    setTimeout(loadViaFetch, 3000); // show something if the stream can't connect
+  // There is no auth in the backend, so the greeting name is a plain setting.
+  VF.config = {
+    userName: 'Dinesh',
+    maxUploadBytes: 1000 * 1024 * 1024, // mirrors MAX_UPLOAD_SIZE_MB=1000
+    maxUploadLabel: '1 GB',
+    pageSize: 10,
   };
-}
-
-// ─── Uploads ────────────────────────────────────────────────
-function resolveType(file) {
-  if (Object.values(MIME_BY_EXT).includes(file.type)) return file.type;
-  // Browsers often report an empty type for .mkv; fall back to the extension
-  const ext = (file.name.split('.').pop() || '').toLowerCase();
-  return MIME_BY_EXT[ext] || null;
-}
-
-function uploadItemHtml(item) {
-  return `
-    <div class="up-top">
-      <div class="up-name" title="${esc(item.file.name)}">${esc(item.file.name)}</div>
-      <div class="up-size">${formatBytes(item.file.size)}</div>
-      <button class="icon-btn" data-up="cancel" aria-label="Cancel upload of ${esc(item.file.name)}">✕</button>
-    </div>
-    <div class="progress-track"><div class="progress-fill"></div></div>
-    <div class="up-status">Starting…</div>`;
-}
-
-function setUpStatus(item, text, kind) {
-  const status = item.el.querySelector('.up-status');
-  status.textContent = text;
-  item.el.dataset.state = kind || 'active';
-}
-
-function setUpProgress(item, pct) {
-  item.el.querySelector('.progress-fill').style.width = `${pct}%`;
-}
-
-function finishUploadItem(item, delay) {
-  state.uploads.delete(item);
-  setTimeout(() => {
-    item.el.classList.add('leaving');
-    setTimeout(() => item.el.remove(), 250);
-  }, delay);
-}
-
-function addUpload(file) {
-  const type = resolveType(file);
-  if (!type) {
-    toast(`"${file.name}" is not supported. Use MP4, MOV or MKV.`, 'error');
-    return;
-  }
-  if (file.size === 0) {
-    toast(`"${file.name}" is empty.`, 'error');
-    return;
-  }
-  if (file.size > MAX_UPLOAD_BYTES) {
-    toast(`"${file.name}" is ${formatBytes(file.size)}. The limit is ${formatBytes(MAX_UPLOAD_BYTES)}.`, 'error');
-    return;
-  }
-
-  const item = { id: ++uploadSeq, file, type, xhr: null, videoId: null, cancelled: false, el: null };
-  item.el = document.createElement('li');
-  item.el.className = 'upload-item';
-  item.el.innerHTML = uploadItemHtml(item);
-  item.el.__file = file; // lets the Retry button restart this upload
-  uploadList.appendChild(item.el);
-  state.uploads.add(item);
-  runUpload(item);
-}
-
-function putFile(item, uploadUrl) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    item.xhr = xhr;
-    const started = Date.now();
-    xhr.open('PUT', uploadUrl);
-    xhr.setRequestHeader('Content-Type', item.type);
-
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const pct = Math.round((e.loaded / e.total) * 100);
-      const elapsed = (Date.now() - started) / 1000;
-      const speed = elapsed > 0.5 ? e.loaded / elapsed : 0;
-      const eta = speed > 0 ? formatEta((e.total - e.loaded) / speed) : '';
-      setUpProgress(item, pct);
-      setUpStatus(item, `Uploading ${pct}% · ${formatBytes(e.loaded)} of ${formatBytes(e.total)}${speed ? ` · ${formatBytes(speed)}/s` : ''}${eta ? ` · ${eta}` : ''}`);
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`Upload failed (HTTP ${xhr.status})`));
-    };
-    xhr.onerror = () => reject(new Error('Network error during upload'));
-    xhr.onabort = () => reject(new Error('cancelled'));
-    xhr.send(item.file);
-  });
-}
-
-async function api(path, body) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error?.message || `Request failed (HTTP ${res.status})`);
-  return json.data;
-}
-
-async function runUpload(item) {
   try {
-    setUpStatus(item, 'Preparing upload…');
-    const { videoId, uploadUrl } = await api('/api/upload/initiate', {
-      filename: item.file.name,
-      contentType: item.type,
-      fileSize: item.file.size,
-    });
-    item.videoId = videoId;
-    if (item.cancelled) throw new Error('cancelled');
+    const savedName = localStorage.getItem('vf-name');
+    if (savedName) VF.config.userName = savedName;
+  } catch { /* storage unavailable */ }
+  VF.ACTIVE_STATUSES =['PENDING', 'UPLOADING', 'UPLOADED', 'PROCESSING'];
 
-    await putFile(item, uploadUrl);
+  // ─── Icons (inline SVG, stroke = currentColor) ─────────────
+  const ICONS = {
+    home: '<path d="M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10"/>',
+    upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
+    film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 15h18M8 4v16M16 4v16"/>',
+    radio: '<circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 010 8.4M7.8 16.2a6 6 0 010-8.4M19 5a10 10 0 010 14M5 19A10 10 0 015 5"/>',
+    jobs: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2M3 13h18"/>',
+    settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+    bell: '<path d="M6 8a6 6 0 0112 0c0 7 3 8 3 8H3s3-1 3-8M10 20a2 2 0 004 0"/>',
+    menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+    play: '<path d="M8 5v14l11-7z" fill="currentColor"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    database: '<path d="M3 7c0-1.7 4-3 9-3s9 1.3 9 3-4 3-9 3-9-1.3-9-3zM3 7v10c0 1.7 4 3 9 3s9-1.3 9-3V7"/>',
+    check: '<path d="M5 12l5 5 9-10"/>',
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>',
+    dots: '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+    back: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+    forward: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    cloud: '<path d="M16 16l-4-4-4 4M12 12v9"/><path d="M20.4 18.4A5 5 0 0018 9h-1.3A8 8 0 104 16.3"/>',
+    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    alert: '<path d="M12 3l10 18H2L12 3zM12 10v5M12 18h0"/>',
+    eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5"/>',
+    activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    hdd: '<rect x="3" y="14" width="18" height="6" rx="2"/><path d="M3 14l3-9h12l3 9M7 17h0"/>',
+  };
+  VF.icon = (name, size = 18) =>
+    `<svg class="svg-icon" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
-    item.el.querySelector('[data-up="cancel"]')?.remove(); // too late to cancel once the file is uploaded
-    setUpProgress(item, 100);
-    setUpStatus(item, 'Upload complete — starting transcoding…');
-    await api('/api/upload/complete', { videoId });
+  // ─── Store ─────────────────────────────────────────────────
+  const store = {
+    videos: {},
+    loaded: false,
+    health: null,
+    connection: 'connecting',
+    notifications: [],
+    ui: { search: '', status: 'all' },
+    _subs: new Set(),
+    _pending: new Set(),
+    _scheduled: false,
 
-    setUpStatus(item, 'Sent to the transcoding queue ✓', 'done');
-    toast(`"${item.file.name}" uploaded. Transcoding has started.`, 'success');
-    finishUploadItem(item, 4000);
-  } catch (err) {
-    if (item.videoId) discardRecord(item.videoId); // don't leave an orphaned PENDING record
-    if (item.cancelled || err.message === 'cancelled') {
-      finishUploadItem(item, 0);
-      return;
+    list() {
+      return Object.values(this.videos).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    },
+    activeCount() {
+      return Object.values(this.videos).filter((v) => VF.ACTIVE_STATUSES.includes(v.status)).length;
+    },
+    subscribe(fn) {
+      this._subs.add(fn);
+      return () => this._subs.delete(fn);
+    },
+    // Coalesce bursts of events into one notification per animation frame
+    emit(type) {
+      this._pending.add(type);
+      if (this._scheduled) return;
+      this._scheduled = true;
+      requestAnimationFrame(() => {
+        const types = new Set(this._pending);
+        this._pending.clear();
+        this._scheduled = false;
+        this._subs.forEach((fn) => { try { fn(types); } catch (err) { console.error(err); } });
+      });
+    },
+  };
+  VF.store = store;
+
+  // ─── Notifications ─────────────────────────────────────────
+  function notify(type, title, videoId) {
+    store.notifications.unshift({ id: Date.now() + Math.random(), type, title, videoId, at: new Date().toISOString(), read: false });
+    store.notifications.length = Math.min(store.notifications.length, 30);
+    store.emit('notifications');
+  }
+
+  function applyVideos(list, { replace = false } = {}) {
+    const previous = store.videos;
+    const next = replace ? {} : { ...previous };
+    for (const video of list) {
+      const before = previous[video.id];
+      next[video.id] = video;
+      if (store.loaded && before && before.status !== video.status) {
+        if (video.status === 'COMPLETED') {
+          notify('success', `"${video.originalName}" is ready to watch`, video.id);
+          toast(`"${video.originalName}" is ready to watch`, 'success');
+        } else if (video.status === 'FAILED') {
+          notify('error', `"${video.originalName}" failed to process`, video.id);
+          toast(`"${video.originalName}" failed to process`, 'error');
+        }
+      }
     }
-    setUpStatus(item, err.message, 'error');
-    const cancel = item.el.querySelector('[data-up="cancel"]');
-    const actions = '<button class="btn btn-ghost btn-sm" data-up="retry">Retry</button><button class="icon-btn" data-up="dismiss" aria-label="Dismiss">✕</button>';
-    if (cancel) cancel.outerHTML = actions;
-    else item.el.querySelector('.up-top').insertAdjacentHTML('beforeend', actions);
-    state.uploads.delete(item);
+    store.videos = next;
+    store.loaded = true;
+    store.emit('videos');
   }
-}
 
-function discardRecord(videoId) {
-  fetch(`/api/videos/${encodeURIComponent(videoId)}`, { method: 'DELETE' }).catch(() => {});
-}
+  VF.removeVideo = (id) => {
+    const { [id]: _removed, ...rest } = store.videos;
+    store.videos = rest;
+    store.emit('videos');
+  };
 
-uploadList.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-up]');
-  if (!btn || !btn.dataset.up) return;
-  const li = btn.closest('.upload-item');
-  const item = [...state.uploads].find((u) => u.el === li);
+  // Used by the watch page when it is opened before the first SSE snapshot arrives
+  VF.fetchVideo = async (id) => {
+    const res = await fetch(`/api/videos/${encodeURIComponent(id)}`);
+    const json = await res.json();
+    if (!json.success || !json.data) {
+      const err = new Error(json.error?.message || 'Video not found');
+      err.status = res.status;
+      throw err;
+    }
+    return json.data;
+  };
 
-  switch (btn.dataset.up) {
-    case 'cancel':
-      if (!item) return;
-      item.cancelled = true; // runUpload's catch block aborts, cleans up and removes the row
-      if (item.xhr) item.xhr.abort();
-      toast(`Cancelled "${item.file.name}"`, 'info', 2500);
-      break;
-    case 'dismiss':
-      li.remove();
-      break;
-    case 'retry':
-      if (li.__file) { const file = li.__file; li.remove(); addUpload(file); }
-      break;
+  // ─── Live updates (SSE) with a fetch fallback ──────────────
+  let fallbackTimer;
+  async function loadViaFetch() {
+    if (store.loaded) return;
+    try {
+      const res = await fetch('/api/videos?page=1&limit=100');
+      const json = await res.json();
+      if (json.success) applyVideos(json.data.videos, { replace: true });
+    } catch { /* the stream will retry */ }
   }
-});
 
-function handleFiles(fileList) {
-  [...fileList].forEach(addUpload);
-}
+  function initSSE() {
+    const source = new EventSource('/api/events');
+    source.addEventListener('initial-load', (e) => applyVideos(JSON.parse(e.data), { replace: true }));
+    source.addEventListener('video-update', (e) => applyVideos([JSON.parse(e.data)]));
+    source.onopen = () => { store.connection = 'live'; store.emit('connection'); };
+    source.onerror = () => {
+      store.connection = 'offline';
+      store.emit('connection');
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(loadViaFetch, 3000);
+    };
+  }
 
-fileInput.addEventListener('change', () => {
-  handleFiles(fileInput.files);
-  fileInput.value = ''; // allow choosing the same file again
-});
+  // ─── System health (sidebar footer + settings page) ────────
+  VF.refreshHealth = async function refreshHealth() {
+    try {
+      const [basic, detailed] = await Promise.all([
+        fetch('/health').then((r) => r.json()),
+        fetch('/health/detailed').then((r) => r.json()),
+      ]);
+      store.health = { ok: detailed.status === 'HEALTHY', provider: basic.provider, components: detailed.components, checkedAt: new Date().toISOString() };
+    } catch {
+      store.health = { ok: false, provider: null, components: null, checkedAt: new Date().toISOString() };
+    }
+    store.emit('health');
+  };
 
-['dragenter', 'dragover'].forEach((evt) =>
-  uploadZone.addEventListener(evt, (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); }));
-['dragleave', 'drop'].forEach((evt) =>
-  uploadZone.addEventListener(evt, (e) => { e.preventDefault(); uploadZone.classList.remove('dragover'); }));
-uploadZone.addEventListener('drop', (e) => handleFiles(e.dataTransfer.files));
+  function renderSystem() {
+    const h = store.health;
+    const sys = document.getElementById('sys');
+    sys.dataset.state = !h ? 'checking' : h.ok ? 'ok' : 'bad';
+    document.getElementById('sys-label').textContent = !h ? 'Checking…' : h.ok ? 'System Online' : 'System Degraded';
+    document.getElementById('sys-detail').textContent = !h || !h.provider ? '' : h.provider === 'aws' ? 'S3 | ECS | SQS | FFmpeg' : 'Local | FFmpeg';
+  }
 
-// A missed drop would make the browser navigate to the file and lose the page
-window.addEventListener('dragover', (e) => e.preventDefault());
-window.addEventListener('drop', (e) => e.preventDefault());
+  function renderConnection() {
+    const el = document.getElementById('conn');
+    const map = { live: ['live', 'Live'], offline: ['offline', 'Reconnecting…'], connecting: ['connecting', 'Connecting…'] };
+    const [kind, label] = map[store.connection];
+    el.className = `conn conn-${kind}`;
+    document.getElementById('conn-label').textContent = label;
+  }
 
-window.addEventListener('beforeunload', (e) => {
-  if (state.uploads.size > 0) { e.preventDefault(); e.returnValue = ''; }
-});
+  // ─── Floating menu (row actions) ───────────────────────────
+  let openMenuEl = null;
+  function closeMenu() {
+    if (openMenuEl) { openMenuEl.remove(); openMenuEl = null; }
+  }
+  VF.menu = function menu(anchor, items) {
+    closeMenu();
+    const el = document.createElement('div');
+    el.className = 'menu';
+    el.setAttribute('role', 'menu');
+    el.innerHTML = items.map((item, i) =>
+      `<button role="menuitem" class="menu-item ${item.danger ? 'danger' : ''}" data-i="${i}">${VF.icon(item.icon, 16)}${esc(item.label)}</button>`).join('');
+    document.body.appendChild(el);
+    const rect = anchor.getBoundingClientRect();
+    const width = el.offsetWidth;
+    el.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - el.offsetHeight - 8) + window.scrollY}px`;
+    el.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)) + window.scrollX}px`;
+    el.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-i]');
+      if (!btn) return;
+      closeMenu();
+      items[btn.dataset.i].onClick();
+    });
+    openMenuEl = el;
+    el.querySelector('button').focus();
+  };
+  document.addEventListener('mousedown', (e) => {
+    if (openMenuEl && !openMenuEl.contains(e.target) && !e.target.closest('[data-menu-anchor]')) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+  window.addEventListener('scroll', closeMenu, true);
+  window.addEventListener('resize', closeMenu);
 
-// ─── Boot ───────────────────────────────────────────────────
-initSSE();
+  // ─── Bell / notifications popover ──────────────────────────
+  const bell = document.getElementById('bell');
+  const bellPop = document.getElementById('bell-pop');
+
+  function renderBell() {
+    const unread = store.notifications.filter((n) => !n.read).length;
+    const badge = document.getElementById('bell-badge');
+    badge.textContent = unread > 9 ? '9+' : unread;
+    badge.classList.toggle('hidden', unread === 0);
+
+    if (bellPop.classList.contains('hidden')) return;
+    bellPop.innerHTML = `
+      <div class="pop-head"><strong>Notifications</strong>
+        ${store.notifications.length ? '<button class="link-btn" id="mark-read">Mark all read</button>' : ''}</div>
+      ${store.notifications.length ? `<ul class="notif-list">${store.notifications.map((n) => `
+        <li><a class="notif ${n.read ? '' : 'unread'}" href="${n.videoId ? `#/watch/${encodeURIComponent(n.videoId)}` : '#/jobs'}">
+          <span class="notif-dot notif-${esc(n.type)}"></span>
+          <span><span class="notif-title">${esc(n.title)}</span><span class="notif-time">${esc(timeAgo(n.at))}</span></span>
+        </a></li>`).join('')}</ul>`
+        : '<div class="pop-empty">You are all caught up.<br /><span>Updates about your videos will appear here.</span></div>'}`;
+  }
+
+  function toggleBell(force) {
+    const open = force !== undefined ? force : bellPop.classList.contains('hidden');
+    bellPop.classList.toggle('hidden', !open);
+    bell.setAttribute('aria-expanded', String(open));
+    if (open) renderBell();
+  }
+  bell.addEventListener('click', () => toggleBell());
+  bellPop.addEventListener('click', (e) => {
+    if (e.target.id === 'mark-read') { store.notifications.forEach((n) => { n.read = true; }); renderBell(); }
+    else if (e.target.closest('a')) { toggleBell(false); store.notifications.forEach((n) => { n.read = true; }); renderBell(); }
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!bellPop.classList.contains('hidden') && !e.target.closest('.bell-wrap')) toggleBell(false);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleBell(false); });
+
+  // ─── Router ────────────────────────────────────────────────
+  VF.views = {};
+  let current = null; // { name, cleanup }
+  const view = document.getElementById('view');
+
+  function parseRoute() {
+    const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
+    const [name = '', param = ''] = path.split('/');
+    return { name: name || 'dashboard', param: decodeURIComponent(param), query: new URLSearchParams(query) };
+  }
+
+  function navigate() {
+    const route = parseRoute();
+    const def = VF.views[route.name];
+    if (!def) { location.replace('#/dashboard'); return; }
+
+    if (current && current.cleanup) current.cleanup();
+    closeMenu();
+    document.body.classList.remove('nav-open');
+
+    view.innerHTML = '';
+    view.className = `content${def.dark ? ' theme-dark' : ''}`;
+    document.body.classList.toggle('dark-page', !!def.dark);
+    document.title = `${def.title(route)} — VideoStream`;
+    document.querySelectorAll('[data-nav]').forEach((a) => {
+      const active = a.dataset.nav === (def.nav || route.name);
+      a.classList.toggle('active', active);
+      if (active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+
+    const cleanup = def.mount(view, route);
+    current = { name: route.name, cleanup };
+    window.scrollTo(0, 0);
+  }
+
+  // ─── Boot ──────────────────────────────────────────────────
+  function renderBadges() {
+    const jobs = store.activeCount();
+    const jobsBadge = document.getElementById('nav-jobs-badge');
+    jobsBadge.textContent = jobs;
+    jobsBadge.classList.toggle('hidden', jobs === 0);
+
+    const uploads = VF.uploads ? VF.uploads.activeCount() : 0;
+    const upBadge = document.getElementById('nav-upload-badge');
+    upBadge.textContent = uploads;
+    upBadge.classList.toggle('hidden', uploads === 0);
+
+    document.title = document.title.replace(/^\(\d+\) /, '');
+    if (jobs > 0) document.title = `(${jobs}) ${document.title}`;
+  }
+
+  VF.start = function start() {
+    document.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = VF.icon(el.dataset.icon, 18); });
+    document.getElementById('user-name').textContent = VF.config.userName;
+    document.getElementById('avatar').textContent = VF.config.userName.charAt(0).toUpperCase();
+
+    // Topbar search always searches the library
+    const search = document.getElementById('global-search');
+    let timer;
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        store.ui.search = search.value.trim();
+        if (parseRoute().name !== 'videos') location.hash = '#/videos';
+        else store.emit('ui');
+      }, 200);
+    });
+    store.subscribe((types) => {
+      if (types.has('ui') && search.value.trim() !== store.ui.search) search.value = store.ui.search;
+    });
+
+    // Mobile navigation drawer
+    document.getElementById('menu-btn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    document.getElementById('scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
+
+    store.subscribe((types) => {
+      if (types.has('health')) renderSystem();
+      if (types.has('connection')) renderConnection();
+      if (types.has('notifications')) renderBell();
+      if (types.has('videos') || types.has('uploads')) renderBadges();
+    });
+
+    window.addEventListener('hashchange', navigate);
+    renderConnection();
+    renderSystem();
+    renderBell();
+    initSSE();
+    VF.refreshHealth();
+    setInterval(VF.refreshHealth, 30000);
+    setInterval(() => { if (!bellPop.classList.contains('hidden')) renderBell(); }, 30000);
+    navigate();
+  };
+})();
