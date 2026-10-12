@@ -1,10 +1,11 @@
 /* ============================================================
-   VideoStream — public home (browse, search, watch), Netflix-style.
-   Shows every completed video to every visitor. Depends on common.js.
-   Creator tools stay in the Studio (index.html).
+   VideoStream — public streaming site (browse, search, watch), Netflix-style.
+   Talks only to /api/public, which returns published videos and nothing else.
+   It has no upload, job, queue or log features: those live in the separate admin app.
+   Depends on /shared/common.js.
    ============================================================ */
 (function () {
-  const { esc, timeAgo, formatDuration, formatBytes, toast, copyText, dialog } = window.VF;
+  const { esc, timeAgo, formatDuration, toast, copyText, dialog } = window.VF;
 
   const app = document.getElementById('app');
   const hdr = document.getElementById('hdr');
@@ -37,17 +38,16 @@
     del: (k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } },
   };
 
-  // Uploaded names are sanitised (spaces become underscores), so make them readable
-  const titleOf = (v) => v.originalName.replace(/\.[^.]+$/, '').replace(/_+/g, ' ').trim() || v.originalName;
-  const height = (v) => (v.metadata && v.metadata.height) || 0;
-  const seconds = (v) => (v.metadata && v.metadata.duration) || 0;
+  // The API already returns display-ready fields (title, duration, height, publishedAt)
+  const titleOf = (v) => v.title;
+  const height = (v) => v.height || 0;
+  const seconds = (v) => v.duration || 0;
   const qualityOf = (v) => (height(v) ? `${height(v)}p` : '');
-  const isPublic = (v) => v.status === 'COMPLETED' && !!v.hlsPlaylistUrl;
-  const ageMs = (v) => Date.now() - new Date(v.createdAt).getTime();
+  const ageMs = (v) => Date.now() - new Date(v.publishedAt).getTime();
   const watchHref = (v) => `#/watch/${encodeURIComponent(v.id)}`;
 
   function library() {
-    return Object.values(state.videos).filter(isPublic).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return Object.values(state.videos).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
   }
 
   // Saved on this device only
@@ -60,6 +60,17 @@
     storage.set('vs-list', JSON.stringify(list));
     const v = state.videos[id];
     toast(i >= 0 ? 'Removed from My List' : `Added to My List${v ? `: ${titleOf(v)}` : ''}`, 'info', 2200);
+  }
+
+  // Watch history, saved on this device only: [{ id, at }], newest first
+  const readHistory = () => { try { return JSON.parse(storage.get('vs-history') || '[]'); } catch { return []; } };
+  function recordHistory(id) {
+    const history = readHistory().filter((h) => h.id !== id);
+    history.unshift({ id, at: Date.now() });
+    storage.set('vs-history', JSON.stringify(history.slice(0, 100)));
+  }
+  function removeHistory(id) {
+    storage.set('vs-history', JSON.stringify(readHistory().filter((h) => h.id !== id)));
   }
 
   // Videos the viewer started but did not finish, most recently watched first
@@ -78,26 +89,19 @@
   };
 
   // ─── Data ──────────────────────────────────────────────────
-  async function fetchAll() {
-    const all = [];
-    let total = Infinity;
-    for (let page = 1; all.length < total && page <= 20; page++) {
-      const res = await fetch(`/api/videos?page=${page}&limit=50`);
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error?.message || 'Could not load videos');
-      all.push(...json.data.videos);
-      total = json.data.total;
-      if (json.data.videos.length === 0) break;
-    }
-    return all;
-  }
-
   async function load() {
     try {
+      const res = await fetch('/api/public/videos');
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error?.message || 'Could not load videos');
       const next = {};
-      (await fetchAll()).forEach((v) => { next[v.id] = v; });
+      json.data.videos.forEach((v) => { next[v.id] = v; });
+
+      // Anything that was not there before the last refresh is a newly published video
+      const fresh = state.loaded ? json.data.videos.filter((v) => !state.videos[v.id]) : [];
       state.videos = next;
       state.error = '';
+      if (fresh.length) toast(fresh.length === 1 ? `New on VideoStream: ${titleOf(fresh[0])}` : `${fresh.length} new videos on VideoStream`, 'info');
     } catch (err) {
       if (!state.loaded) state.error = err.message;
     }
@@ -105,18 +109,9 @@
     refreshView();
   }
 
-  // Live: a video that finishes processing appears without a reload
-  function startLive() {
-    const source = new EventSource('/api/events');
-    source.addEventListener('video-update', (e) => {
-      const video = JSON.parse(e.data);
-      const wasPublic = state.videos[video.id] && isPublic(state.videos[video.id]);
-      state.videos[video.id] = video;
-      if (state.loaded && !wasPublic && isPublic(video)) toast(`New on VideoStream: ${titleOf(video)}`, 'info');
-      // Progress updates for videos still processing are not public, so they must not re-render the page
-      if (wasPublic || isPublic(video)) refreshView();
-    });
-    setInterval(load, 120000); // also picks up deletions
+  // Newly published (or removed) videos show up without a reload
+  function startPolling() {
+    setInterval(() => { if (!document.hidden) load(); }, 30000);
   }
 
   // ─── Router ────────────────────────────────────────────────
@@ -154,6 +149,7 @@
       case 'search': setNav(''); currentView = gridView(`Results for “${route.q}”`, 'search', route.q); break;
       case 'browse': setNav(route.param); currentView = gridView(FILTERS[route.param] ? FILTERS[route.param].title : 'Browse', route.param); break;
       case 'mylist': setNav('mylist'); currentView = gridView('My List', 'mylist'); break;
+      case 'history': setNav('history'); currentView = gridView('Watch history', 'history'); break;
       default: setNav('home'); currentView = homeView();
     }
   }
@@ -179,7 +175,7 @@
     ? `<img src="${esc(v.thumbnailUrl)}" alt="" loading="lazy" />`
     : `<span class="thumb-empty">${svg('film', 28)}</span>`);
 
-  const metaLine = (v) => [height(v) >= 720 ? '<span class="hdtag">HD</span>' : '', seconds(v) ? esc(formatDuration(seconds(v))) : '', esc(timeAgo(v.createdAt))]
+  const metaLine = (v) => [height(v) >= 720 ? '<span class="hdtag">HD</span>' : '', seconds(v) ? esc(formatDuration(seconds(v))) : '', esc(timeAgo(v.publishedAt))]
     .filter(Boolean).join(' <span class="dot">·</span> ');
 
   function tileHtml(v, pos) {
@@ -207,6 +203,19 @@
         <h3 class="tile-title">${esc(titleOf(v))}</h3>
         <p class="tile-meta">${metaLine(v)}</p>
       </a>`;
+  }
+
+  // A history card: progress bar for unfinished videos, plus a button to remove it
+  function historyCardHtml(v) {
+    const pos = parseFloat(storage.get(`vs-pos-${v.id}`));
+    const progress = pos > 5 && seconds(v) ? `<span class="tile-prog"><i style="width:${Math.min(100, (pos / seconds(v)) * 100).toFixed(1)}%"></i></span>` : '';
+    return `
+      <div class="gcard hcard">
+        <a href="${watchHref(v)}"><div class="gthumb">${thumbHtml(v)}${seconds(v) ? `<span class="gdur">${esc(formatDuration(seconds(v)))}</span>` : ''}${progress}</div>
+          <h3 class="tile-title">${esc(titleOf(v))}</h3></a>
+        <p class="tile-meta">${metaLine(v)}</p>
+        <button class="link-small" data-act="remove-history" data-id="${esc(v.id)}">Remove from history</button>
+      </div>`;
   }
 
   function rowHtml(title, tiles) {
@@ -251,10 +260,10 @@
               <button class="round" data-act="list" data-id="${esc(v.id)}" aria-pressed="${inList(v.id)}" aria-label="Toggle My List">${svg(inList(v.id) ? 'check' : 'plus', 16)}</button></div></div></div>
         <div class="info-body"><p class="tile-meta">${metaLine(v)}</p>
           <dl class="info-dl">
-            ${row('Resolution', v.metadata ? `${esc(v.metadata.width)} × ${esc(v.metadata.height)}` : '—')}
-            ${row('Frame rate', v.metadata && v.metadata.fps ? `${esc(v.metadata.fps)} fps` : '—')}
-            ${row('Original size', esc(formatBytes(v.fileSize)))}
-            ${row('Uploaded', esc(new Date(v.createdAt).toLocaleString()))}
+            ${row('Resolution', v.width ? `${esc(v.width)} × ${esc(v.height)}` : '—')}
+            ${row('Frame rate', v.fps ? `${esc(v.fps)} fps` : '—')}
+            ${row('Duration', seconds(v) ? esc(formatDuration(seconds(v))) : '—')}
+            ${row('Published', esc(new Date(v.publishedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })))}
           </dl></div>`,
     });
     // The My List button inside the dialog updates itself and the page behind it
@@ -274,6 +283,10 @@
     if (!btn) return;
     if (btn.dataset.act === 'list') { toggleList(btn.dataset.id); refreshView(); }
     else if (btn.dataset.act === 'info') openInfo(btn.dataset.id);
+    else if (btn.dataset.act === 'remove-history') { removeHistory(btn.dataset.id); toast('Removed from history', 'info', 1800); render(); }
+    else if (btn.dataset.act === 'clear-history') {
+      if (window.confirm('Clear your whole watch history on this device?')) { storage.del('vs-history'); render(); }
+    }
     else if (btn.dataset.act === 'retry') { state.loaded = false; state.error = ''; render(); load(); }
   });
 
@@ -303,7 +316,7 @@
 
     const all = library();
     if (all.length === 0) {
-      app.innerHTML = `<div class="page-pad">${notice('film', 'Nothing to watch yet', 'Videos appear here as soon as they finish processing.', '<a class="btn btn-red" href="/#/upload">Upload the first video</a>')}</div>`;
+      app.innerHTML = `<div class="page-pad">${notice('film', 'Nothing to watch yet', 'New videos will appear here as soon as they are published. Check back soon.')}</div>`;
       return {};
     }
 
@@ -312,11 +325,11 @@
     app.querySelectorAll('.row').forEach((r) => { scrolled[r.getAttribute('aria-label')] = r.querySelector('.row-scroll').scrollLeft; });
 
     const featured = all[0];
-    const listed = readList().map((id) => state.videos[id]).filter((v) => v && isPublic(v));
+    const listed = readList().map((id) => state.videos[id]).filter(Boolean);
     const resume = continueWatching();
     const rows = [
       resume.length ? rowHtml('Continue Watching', resume.map(({ v, pos }) => tileHtml(v, pos)).join('')) : '',
-      rowHtml('Latest uploads', all.map((v) => tileHtml(v)).join('')),
+      rowHtml('Latest videos', all.map((v) => tileHtml(v)).join('')),
       listed.length ? rowHtml('My List', listed.map((v) => tileHtml(v)).join('')) : '',
       ...Object.keys(FILTERS).map((key) => {
         const items = all.filter(FILTERS[key].test);
@@ -356,19 +369,24 @@
       const needle = q.toLowerCase();
       items = items.filter((v) => !needle || titleOf(v).toLowerCase().includes(needle) || v.id.toLowerCase().includes(needle));
     } else if (kind === 'mylist') {
-      items = readList().map((id) => state.videos[id]).filter((v) => v && isPublic(v));
+      items = readList().map((id) => state.videos[id]).filter(Boolean);
+    } else if (kind === 'history') {
+      items = readHistory().map((h) => state.videos[h.id]).filter(Boolean);
     } else if (FILTERS[kind]) {
       items = items.filter(FILTERS[kind].test);
     }
 
     const empty = kind === 'mylist'
       ? notice('plus', 'Your list is empty', 'Press + on any video to save it here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
+      : kind === 'history'
+        ? notice('film', 'No watch history yet', 'Videos you watch will appear here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
       : kind === 'search'
         ? notice('film', 'No videos found', `Nothing matches “${q}”.`, '<a class="btn btn-light" href="#/">Back to home</a>')
         : notice('film', 'Nothing here yet', 'No videos match this category right now.', '<a class="btn btn-light" href="#/">Back to home</a>');
 
-    app.innerHTML = `<div class="page-pad"><h1 class="page-title">${esc(title)}</h1>
-      ${items.length ? `<div class="ggrid">${items.map(gridCardHtml).join('')}</div>` : empty}</div>`;
+    const clearBtn = kind === 'history' && items.length ? '<button class="btn btn-gray btn-sm" data-act="clear-history">Clear history</button>' : '';
+    app.innerHTML = `<div class="page-pad"><div class="page-head-row"><h1 class="page-title">${esc(title)}</h1>${clearBtn}</div>
+      ${items.length ? `<div class="ggrid">${items.map((v) => (kind === 'history' ? historyCardHtml(v) : gridCardHtml(v))).join('')}</div>` : empty}</div>`;
     return {};
   }
 
@@ -390,14 +408,13 @@
       if (!video) {
         // It may be newer than our list, so ask the server once
         try {
-          const res = await fetch(`/api/videos/${encodeURIComponent(id)}`);
+          const res = await fetch(`/api/public/videos/${encodeURIComponent(id)}`);
           const json = await res.json();
           if (json.success) { video = json.data; state.videos[id] = video; }
         } catch { /* fall through to not found */ }
         if (destroyed) return;
       }
-      if (!video) return message('Video not found', 'It may have been removed.');
-      if (!isPublic(video)) return message('This video isn\'t available yet', 'It is still being processed. Check back in a moment.');
+      if (!video) return message('Video not found', 'It may have been removed or is not available.');
       mount();
     }
 
@@ -440,7 +457,6 @@
             <div class="w-actions">
               <button class="btn btn-gray btn-sm" id="list-btn" data-act="list" data-id="${esc(video.id)}" aria-pressed="${inList(video.id)}">${svg(inList(video.id) ? 'check' : 'plus', 15)} My List</button>
               <button class="btn btn-gray btn-sm" id="share">${svg('share', 15)} Share</button>
-              <button class="btn btn-gray btn-sm" id="copy-stream">${svg('link', 15)} Stream URL</button>
             </div>
           </div>
 
@@ -472,7 +488,6 @@
       let countdown = null;
 
       $('#share').addEventListener('click', () => copyText(location.href, 'Link copied'));
-      $('#copy-stream').addEventListener('click', () => copyText(video.hlsPlaylistUrl, 'Stream URL copied'));
 
       // ── Overlays ──
       const buffering = $('#buffering');
@@ -489,7 +504,9 @@
       auto.checked = storage.get('vs-autonext') !== 'off';
       auto.addEventListener('change', () => storage.set('vs-autonext', auto.checked ? 'on' : 'off'));
 
-      // ── Resume ──
+      // ── History and resume ──
+      let recorded = false;
+      videoEl.addEventListener('playing', () => { if (!recorded) { recorded = true; recordHistory(video.id); } });
       let lastSaved = 0;
       videoEl.addEventListener('loadedmetadata', () => {
         const pos = parseFloat(storage.get(posKey));
@@ -642,5 +659,5 @@
   // ─── Boot ──────────────────────────────────────────────────
   render();
   load();
-  startLive();
+  startPolling();
 })();

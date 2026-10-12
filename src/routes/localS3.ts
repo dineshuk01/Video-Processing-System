@@ -3,8 +3,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { ResponseHandler } from '../utils/responseHandler';
+import { isAdminRequest } from '../middleware/adminAuth';
+import { dbService } from '../services/db/dbService';
+import { videoService } from '../services/video/videoService';
+import { getPublishedCache, setPublishedCache } from '../services/video/publishedCache';
 
 const router = Router();
+
+async function isPublishedVideo(id: string): Promise<boolean> {
+  const cached = getPublishedCache(id);
+  if (cached !== undefined) return cached;
+  const video = await dbService.getVideo(id);
+  const ok = !!video && videoService.isPublic(video);
+  setPublishedCache(id, ok);
+  return ok;
+}
 
 const maxUploadSizeBytes =
   parseInt(process.env.MAX_UPLOAD_SIZE_MB || '100', 10) * 1024 * 1024;
@@ -28,6 +41,12 @@ router.put(
           'Mock S3 endpoint is only available when PROVIDER=local',
           403
         );
+      }
+
+      // Only admins upload (the local stand-in for a presigned S3 PUT)
+      if (!isAdminRequest(req)) {
+        req.resume();
+        return ResponseHandler.error(res, 'Admin sign-in required', 401, 'UNAUTHORIZED');
       }
 
       const bucket = req.params.bucket;
@@ -150,6 +169,16 @@ router.get(
       const relativePath = path.relative(path.join(dataDir, bucket), filePath);
       if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
         return ResponseHandler.error(res, 'Directory traversal detected', 400);
+      }
+
+      // The public may only read the processed output of published videos. Raw uploads and
+      // unpublished videos are admin-only, and look "not found" to everyone else.
+      if (!isAdminRequest(req)) {
+        const publicBucket = process.env.LOCAL_S3_PUBLIC_BUCKET;
+        const match = bucket === publicBucket ? /^processed\/([^/]+)\//.exec(key) : null;
+        if (!match || !(await isPublishedVideo(match[1]))) {
+          return ResponseHandler.error(res, `Object ${key} not found in bucket ${bucket}`, 404);
+        }
       }
 
       if (!fs.existsSync(filePath)) {

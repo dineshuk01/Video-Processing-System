@@ -11,6 +11,14 @@ import { dbService } from './services/db/dbService';
 import { getStorageService } from './services/storage/storageService';
 import { Logger } from './utils/logger';
 
+// Processing log lines shown to admins. A logging failure must never fail the transcode.
+const log = (level: 'info' | 'warn' | 'error', message: string) =>
+  dbService.appendEvent(videoId, level, message).catch((err) => Logger.warn('Could not write job log', err.message));
+
+// Base for media URLs served by this app in local mode. Empty means relative URLs, which
+// work from any host. Set PUBLIC_BASE_URL only if the site is served from another origin.
+const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+
 // 1. Retrieve & Validate Task Parameters
 const videoId = process.env.VIDEO_ID!;
 const inputBucket = process.env.INPUT_BUCKET!;
@@ -181,26 +189,43 @@ async function executeTranscoding() {
       progress: 5,
     });
 
+    await log('info', 'Source file downloaded');
+
+    // Admin settings chosen for this video (quality ladder, auto-publish)
+    const record = await dbService.getVideo(videoId);
+    const selectedQualities = record?.qualities && record.qualities.length > 0 ? record.qualities : null;
+
     // Step B2: Probe source video with FFprobe
     let metadata: VideoMetadata;
     try {
       metadata = await probeVideo(inputFilePath);
     } catch (probeErr: any) {
       Logger.warn(`FFprobe analysis failed, using defaults: ${probeErr.message}`);
+      await log('warn', `Could not read source details, using defaults: ${probeErr.message}`);
       metadata = { width: 1920, height: 1080, duration: 0, codec: 'unknown', fps: 30 };
     }
 
     // Save metadata to DB
     await dbService.updateVideo(videoId, { metadata, progress: 8 });
+    await log('info', `Source: ${metadata.width}x${metadata.height}, ${metadata.codec}, ${metadata.fps} fps, ${metadata.duration.toFixed(1)}s`);
 
     // Step C: Determine which HLS variants to generate (Smart Resolution Scaling)
     const sourceHeight = metadata.height;
-    const eligibleVariants = HLS_VARIANTS.filter((v) => v.height <= sourceHeight);
+    // Never upscale, and only the renditions the admin asked for
+    const eligibleVariants = HLS_VARIANTS.filter(
+      (v) => v.height <= sourceHeight && (!selectedQualities || selectedQualities.includes(v.height))
+    );
 
     if (eligibleVariants.length === 0) {
-      // Source is extremely small — generate at least 360p
-      eligibleVariants.push(HLS_VARIANTS[0]);
+      // Nothing selected fits the source (e.g. only 1080p chosen for a 480p video):
+      // fall back to the smallest selected rendition, or 360p, so the video is still playable
+      const fallback = selectedQualities
+        ? HLS_VARIANTS.find((v) => v.height === Math.min(...selectedQualities)) || HLS_VARIANTS[0]
+        : HLS_VARIANTS[0];
+      eligibleVariants.push(fallback);
+      await log('warn', `None of the selected qualities fit a ${sourceHeight}p source. Generating ${fallback.label} instead.`);
     }
+    await log('info', `Generating renditions: ${eligibleVariants.map((v) => v.label).join(', ')}`);
 
     Logger.info(`Transcoder Task: Source resolution ${metadata.width}x${sourceHeight}. Generating ${eligibleVariants.length} HLS variant(s): ${eligibleVariants.map(v => v.label).join(', ')}`);
 
@@ -244,6 +269,7 @@ async function executeTranscoding() {
       );
 
       await runFfmpeg(ffmpegArgs);
+      await log('info', `Encoded ${variant.label}`);
       currentProgress += progressPerVariant;
       await dbService.updateVideo(videoId, { progress: Math.round(currentProgress) });
     }
@@ -274,9 +300,12 @@ async function executeTranscoding() {
     }
     await dbService.updateVideo(videoId, { progress: 83 });
 
-    // Step E2: Write WebVTT Subtitle Track
-    Logger.info(`Transcoder Task: Generating subtitle track files...`);
+    // Step E2: Optional placeholder WebVTT track. Off by default: these are sample lines, not real
+    // captions, so they must not appear on a public site unless someone deliberately turns them on.
     const subtitleFileName = 'subtitles_en.vtt';
+    const subtitlePath = path.join(outputDir, subtitleFileName);
+    if (process.env.ENABLE_PLACEHOLDER_CAPTIONS === 'true') {
+    Logger.info(`Transcoder Task: Generating subtitle track files...`);
     const subtitleContent = `WEBVTT
 
 00:00:00.000 --> 00:00:02.500
@@ -288,7 +317,6 @@ This adaptive stream has been aligned with standard GOP keyframes.
 00:00:05.500 --> 00:00:08.000
 Enjoy smooth resolution switching and clear captions!
 `;
-    const subtitlePath = path.join(outputDir, subtitleFileName);
     await fs.promises.writeFile(subtitlePath, subtitleContent, 'utf8');
 
     // Write subtitle HLS playlist (Hls.js requires subtitle tracks as .m3u8, not raw .vtt)
@@ -296,6 +324,7 @@ Enjoy smooth resolution switching and clear captions!
     const videoDuration = metadata.duration || 10;
     const subtitlePlaylistContent = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(videoDuration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${videoDuration.toFixed(6)},\n${subtitleFileName}\n#EXT-X-ENDLIST\n`;
     await fs.promises.writeFile(path.join(outputDir, subtitlePlaylistName), subtitlePlaylistContent, 'utf8');
+    }
 
     await dbService.updateVideo(videoId, { progress: 86 });
 
@@ -322,14 +351,13 @@ Enjoy smooth resolution switching and clear captions!
       await storage.uploadFile(outputBucket, fileKey, filePath);
     }
     await dbService.updateVideo(videoId, { progress: 97 });
+    await log('info', `Uploaded ${files.length} files to storage`);
 
     // Step H: Cleanup Local Temp directories & set COMPLETED
     Logger.info('Transcoder Task: Cleaning up local temporary transcode files...');
     if (fs.existsSync(tempDir)) {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
-
-    const port = process.env.PORT || 5000;
 
     // Build HLS playlist URL (CDN or local)
     let hlsPlaylistUrl: string;
@@ -338,7 +366,7 @@ Enjoy smooth resolution switching and clear captions!
     } else if (process.env.PROVIDER === 'aws') {
       hlsPlaylistUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/master.m3u8`;
     } else {
-      hlsPlaylistUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/master.m3u8`;
+      hlsPlaylistUrl = `${publicBase}/api/local-s3/${outputBucket}/${outputKeyPrefix}/master.m3u8`;
     }
 
     // Build poster thumbnail URL
@@ -349,7 +377,7 @@ Enjoy smooth resolution switching and clear captions!
       } else if (process.env.PROVIDER === 'aws') {
         thumbnailUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/poster.jpg`;
       } else {
-        thumbnailUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/poster.jpg`;
+        thumbnailUrl = `${publicBase}/api/local-s3/${outputBucket}/${outputKeyPrefix}/poster.jpg`;
       }
     }
 
@@ -361,7 +389,7 @@ Enjoy smooth resolution switching and clear captions!
       } else if (process.env.PROVIDER === 'aws') {
         subtitleUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/${subtitleFileName}`;
       } else {
-        subtitleUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/${subtitleFileName}`;
+        subtitleUrl = `${publicBase}/api/local-s3/${outputBucket}/${outputKeyPrefix}/${subtitleFileName}`;
       }
     }
 
@@ -371,10 +399,14 @@ Enjoy smooth resolution switching and clear captions!
       hlsPlaylistUrl,
       thumbnailUrl,
       subtitleUrl,
+      ...(record?.autoPublish ? { published: true } : {}),
     });
+    await log('info', 'Processing complete');
+    if (record?.autoPublish) await log('info', 'Published to the public site (auto-publish)');
     Logger.info(`Transcoder Task: Video ${videoId} successfully transcoded and uploaded!`);
   } catch (err: any) {
     Logger.error(`Transcoder Task: Failed to transcode video ${videoId}`, err.message);
+    await log('error', `Transcoding error: ${err.message}`);
 
     // Try to cleanup temp folders
     try {

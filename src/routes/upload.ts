@@ -1,15 +1,17 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { videoService } from '../services/video/videoService';
 import { ResponseHandler } from '../utils/responseHandler';
+import { withoutEvents } from '../utils/videoView';
 
+// Admin-only: mounted at /api/admin/upload and /api/admin/videos behind requireAdmin
 const router = Router();
 
-// 1. POST /api/upload/initiate
+// 1. POST /initiate
 router.post(
   '/initiate',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { filename, contentType, fileSize } = req.body;
+      const { filename, contentType, fileSize, title, qualities, autoPublish } = req.body;
 
       if (!filename || typeof filename !== 'string') {
         return ResponseHandler.error(res, 'Invalid or missing parameter: filename', 400);
@@ -21,7 +23,7 @@ router.post(
         return ResponseHandler.error(res, 'Invalid or missing parameter: fileSize (must be a positive number)', 400);
       }
 
-      const result = await videoService.initiateUpload({ filename, contentType, fileSize });
+      const result = await videoService.initiateUpload({ filename, contentType, fileSize, title, qualities, autoPublish });
       return ResponseHandler.success(res, result, 201);
     } catch (err: any) {
       next(err);
@@ -29,7 +31,7 @@ router.post(
   }
 );
 
-// 2. POST /api/upload/complete
+// 2. POST /complete
 router.post(
   '/complete',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -41,36 +43,34 @@ router.post(
       }
 
       const result = await videoService.completeUpload(videoId);
-      return ResponseHandler.success(res, result, 200);
+      return ResponseHandler.success(res, withoutEvents(result), 200);
     } catch (err: any) {
       next(err);
     }
   }
 );
 
-// 3. GET /api/videos (with pagination)
+// 3. GET /api/admin/videos (with pagination)
 router.get(
   '/',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const pageQuery = req.query.page;
-      const limitQuery = req.query.limit;
-
-      let page = parseInt(pageQuery as string, 10);
-      let limit = parseInt(limitQuery as string, 10);
+      let page = parseInt(req.query.page as string, 10);
+      let limit = parseInt(req.query.limit as string, 10);
 
       if (isNaN(page) || page <= 0) page = 1;
       if (isNaN(limit) || limit <= 0) limit = 10;
+      limit = Math.min(limit, 200);
 
       const result = await videoService.getVideos(page, limit);
-      return ResponseHandler.success(res, result, 200);
+      return ResponseHandler.success(res, { ...result, videos: result.videos.map(withoutEvents) }, 200);
     } catch (err: any) {
       next(err);
     }
   }
 );
 
-// 4. GET /api/videos/:id — fetch a single video record
+// 4. GET /api/admin/videos/:id — one video, including its processing log
 router.get(
   '/:id',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -87,22 +87,17 @@ router.get(
   }
 );
 
-// 5. DELETE /api/videos/:id — delete a video and its resources
+// 5. DELETE /api/admin/videos/:id — delete a video and its resources
 router.delete(
   '/:id',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { id } = req.params;
-      await videoService.deleteVideo(id);
+      await videoService.deleteVideo(req.params.id);
       return ResponseHandler.success(res, { message: 'Video deleted successfully' }, 200);
     } catch (err: any) {
-      if (err.message.includes('not found')) {
-        return ResponseHandler.error(res, err.message, 404, 'NOT_FOUND');
-      }
       next(err);
     }
   }
 );
 
 export default router;
-

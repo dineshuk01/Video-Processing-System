@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { dbService } from '../services/db/dbService';
 import { Logger } from '../utils/logger';
+import { withoutEvents } from '../utils/videoView';
 
 const router = Router();
 
@@ -34,7 +35,7 @@ async function startPolling() {
         const key = `${video.status}:${video.progress}`;
         if (lastSnapshot[video.id] !== key) {
           lastSnapshot[video.id] = key;
-          broadcast('video-update', video);
+          broadcast('video-update', withoutEvents(video));
         }
       }
     } catch (err: any) {
@@ -59,7 +60,7 @@ router.get('/', (req: Request, res: Response) => {
 
   // Send initial snapshot of all videos immediately on connect
   dbService.listVideos(1, 100).then((result) => {
-    const payload = `event: initial-load\ndata: ${JSON.stringify(result.videos)}\n\n`;
+    const payload = `event: initial-load\ndata: ${JSON.stringify(result.videos.map(withoutEvents))}\n\n`;
     res.write(payload);
   }).catch(() => {});
 

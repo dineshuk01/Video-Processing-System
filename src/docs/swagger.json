@@ -46,7 +46,7 @@
         }
       }
     },
-    "/api/upload/initiate": {
+    "/api/admin/upload/initiate": {
       "post": {
         "tags": ["Upload"],
         "summary": "Initiate Video Upload",
@@ -105,7 +105,7 @@
         }
       }
     },
-    "/api/upload/complete": {
+    "/api/admin/upload/complete": {
       "post": {
         "tags": ["Upload"],
         "summary": "Complete Video Upload",
@@ -142,7 +142,7 @@
         }
       }
     },
-    "/api/videos": {
+    "/api/admin/videos": {
       "get": {
         "tags": ["Videos"],
         "summary": "List All Videos",
@@ -190,7 +190,7 @@
         }
       }
     },
-    "/api/videos/{id}": {
+    "/api/admin/videos/{id}": {
       "get": {
         "tags": ["Videos"],
         "summary": "Get Video Details",
@@ -249,7 +249,7 @@
         }
       }
     },
-    "/api/events": {
+    "/api/admin/events": {
       "get": {
         "tags": ["Events"],
         "summary": "Server-Sent Events Stream",
@@ -266,7 +266,7 @@
         }
       }
     },
-    "/api/metrics": {
+    "/metrics": {
       "get": {
         "tags": ["Metrics"],
         "summary": "Prometheus Metrics",

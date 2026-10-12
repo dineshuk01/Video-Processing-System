@@ -3,37 +3,52 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#0b1220" />
-  <title>VideoStream</title>
-  <meta name="description" content="Upload, transcode and stream adaptive HLS videos." />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#0b1226" />
+  <title>VideoStream Admin</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="app.css" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%232563eb'/><path d='M9 7l8 5-8 5z' fill='white'/></svg>" />
-  <!-- Hls.js (pinned version) -->
+  <!-- Hls.js (pinned version), used by the preview player -->
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#view">Skip to content</a>
   <div class="scrim" id="scrim"></div>
 
-  <div class="shell">
+  <!-- ── Sign in ── -->
+  <div class="login hidden" id="login">
+    <form class="login-card" id="login-form">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg></span>
+      <h1>VideoStream Admin</h1>
+      <p>Private dashboard. Enter the admin key to continue.</p>
+      <label class="sr-only" for="login-key">Admin key</label>
+      <input class="input" id="login-key" type="password" autocomplete="current-password" placeholder="Admin key" required />
+      <div class="login-error hidden" id="login-error" role="alert"></div>
+      <button class="btn btn-primary" type="submit" id="login-submit">Sign in</button>
+    </form>
+  </div>
+
+  <div class="shell" id="shell">
     <!-- ── Sidebar ── -->
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
       <a class="brand" href="#/dashboard">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg></span>
-        VideoStream
+        VideoStream <span class="brand-tag">Admin</span>
       </a>
 
       <nav class="nav">
         <a class="nav-item" href="#/dashboard" data-nav="dashboard"><span class="ico" data-icon="home"></span>Dashboard</a>
-        <a class="nav-item" href="#/upload" data-nav="upload"><span class="ico" data-icon="upload"></span>Upload Video<span class="nav-badge hidden" id="nav-upload-badge"></span></a>
-        <a class="nav-item" href="#/videos" data-nav="videos"><span class="ico" data-icon="film"></span>My Videos</a>
-        <span class="nav-item nav-disabled" aria-disabled="true" title="Live streaming is not available yet"><span class="ico" data-icon="radio"></span>Live Streams<span class="nav-soon">Soon</span></span>
+        <a class="nav-item" href="#/upload" data-nav="upload"><span class="ico" data-icon="upload"></span>Upload<span class="nav-badge hidden" id="nav-upload-badge"></span></a>
+        <a class="nav-item" href="#/videos" data-nav="videos"><span class="ico" data-icon="film"></span>Videos</a>
         <a class="nav-item" href="#/jobs" data-nav="jobs"><span class="ico" data-icon="jobs"></span>Processing Jobs<span class="nav-badge hidden" id="nav-jobs-badge"></span></a>
-        <a class="nav-item" href="#/settings" data-nav="settings"><span class="ico" data-icon="settings"></span>Settings</a>
+        <a class="nav-item" href="#/logs" data-nav="logs"><span class="ico" data-icon="activity"></span>Logs</a>
+        <a class="nav-item" href="#/system" data-nav="system"><span class="ico" data-icon="settings"></span>System</a>
       </nav>
+
+      <a class="nav-item nav-external" href="/" target="_blank" rel="noopener"><span class="ico" data-icon="eye"></span>View public site</a>
     </aside>
 
     <!-- ── Main column ── -->
@@ -55,7 +70,8 @@
             </button>
             <div class="popover hidden" id="bell-pop" role="dialog" aria-label="Notifications"></div>
           </div>
-          <div class="user"><span class="avatar" id="avatar" aria-hidden="true">D</span><span class="user-name" id="user-name">Dinesh</span></div>
+          <div class="user"><span class="avatar" aria-hidden="true">A</span><span class="user-name">Admin</span></div>
+          <button class="btn btn-ghost btn-sm" id="signout" hidden>Sign out</button>
         </div>
       </header>
 
@@ -63,7 +79,7 @@
     </div>
   </div>
 
-  <script src="common.js"></script>
+  <script src="/shared/common.js"></script>
   <script src="app.js"></script>
   <script src="upload.js"></script>
   <script src="views.js"></script>

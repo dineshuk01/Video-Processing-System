@@ -7,19 +7,36 @@
   const VF = window.VF;
   const { esc, toast, timeAgo } = VF;
 
-  // There is no auth in the backend, so the greeting name is a plain setting.
   VF.config = {
-    userName: 'Dinesh',
-    // Defaults only: replaced at startup by the server's MAX_UPLOAD_SIZE_MB (see loadServerConfig)
+    // Defaults only: replaced by the server's MAX_UPLOAD_SIZE_MB once /api/admin/system answers
     maxUploadBytes: 1000 * 1024 * 1024,
     maxUploadLabel: '1000 MB',
     pageSize: 10,
   };
-  try {
-    const savedName = localStorage.getItem('vf-name');
-    if (savedName) VF.config.userName = savedName;
-  } catch { /* storage unavailable */ }
-  VF.ACTIVE_STATUSES =['PENDING', 'UPLOADING', 'UPLOADED', 'PROCESSING'];
+  VF.ACTIVE_STATUSES = ['PENDING', 'UPLOADING', 'UPLOADED', 'PROCESSING'];
+
+  // ─── Sign-in ───────────────────────────────────────────────
+  const loginEl = document.getElementById('login');
+  const shellEl = document.getElementById('shell');
+  function showLogin(message) {
+    shellEl.classList.add('locked');
+    loginEl.classList.remove('hidden');
+    const err = document.getElementById('login-error');
+    err.textContent = message || '';
+    err.classList.toggle('hidden', !message);
+    document.getElementById('login-key').focus();
+  }
+
+  // A session that expires mid-use shows the sign-in screen instead of a page of failed requests
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const res = await nativeFetch(...args);
+    const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+    if (res.status === 401 && url.includes('/api/admin/') && !/\/api\/admin\/(login|session)/.test(url)) {
+      showLogin('Your session has expired. Sign in again.');
+    }
+    return res;
+  };
 
   // ─── Icons (inline SVG, stroke = currentColor) ─────────────
   const ICONS = {
@@ -47,6 +64,7 @@
     eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5"/>',
     activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    refresh: '<path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7"/>',
     hdd: '<rect x="3" y="14" width="18" height="6" rx="2"/><path d="M3 14l3-9h12l3 9M7 17h0"/>',
   };
   VF.icon = (name, size = 18) =>
@@ -57,6 +75,7 @@
     videos: {},
     loaded: false,
     health: null,
+    overview: null,
     connection: 'connecting',
     notifications: [],
     ui: { search: '', status: 'all' },
@@ -115,6 +134,14 @@
     store.videos = next;
     store.loaded = true;
     store.emit('videos');
+    scheduleOverview(); // keep the dashboard's counters in step with the live update
+  }
+
+  // Refresh the totals/queue a moment after video changes, without a request per progress tick
+  let overviewTimer;
+  function scheduleOverview() {
+    if (overviewTimer || !VF.refreshOverview) return;
+    overviewTimer = setTimeout(() => { overviewTimer = null; VF.refreshOverview(); }, 1000);
   }
 
   VF.removeVideo = (id) => {
@@ -125,7 +152,7 @@
 
   // Used by the watch page when it is opened before the first SSE snapshot arrives
   VF.fetchVideo = async (id) => {
-    const res = await fetch(`/api/videos/${encodeURIComponent(id)}`);
+    const res = await fetch(`/api/admin/videos/${encodeURIComponent(id)}`);
     const json = await res.json();
     if (!json.success || !json.data) {
       const err = new Error(json.error?.message || 'Video not found');
@@ -140,14 +167,14 @@
   async function loadViaFetch() {
     if (store.loaded) return;
     try {
-      const res = await fetch('/api/videos?page=1&limit=100');
+      const res = await fetch('/api/admin/videos?page=1&limit=100');
       const json = await res.json();
       if (json.success) applyVideos(json.data.videos, { replace: true });
     } catch { /* the stream will retry */ }
   }
 
   function initSSE() {
-    const source = new EventSource('/api/events');
+    const source = new EventSource('/api/admin/events');
     source.addEventListener('initial-load', (e) => applyVideos(JSON.parse(e.data), { replace: true }));
     source.addEventListener('video-update', (e) => applyVideos([JSON.parse(e.data)]));
     source.onopen = () => { store.connection = 'live'; store.emit('connection'); };
@@ -159,18 +186,34 @@
     };
   }
 
-  // ─── System health (shown on the Settings page) ────────────
+  // ─── System health and queue overview ──────────────────────
+  const formatLimit = (mb) => (mb >= 1024 ? `${+(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
+
   VF.refreshHealth = async function refreshHealth() {
     try {
-      const [basic, detailed] = await Promise.all([
-        fetch('/health').then((r) => r.json()),
-        fetch('/health/detailed').then((r) => r.json()),
-      ]);
-      store.health = { ok: detailed.status === 'HEALTHY', provider: basic.provider, components: detailed.components, checkedAt: new Date().toISOString() };
+      const res = await fetch('/api/admin/system');
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error?.message || 'System check failed');
+      const d = json.data;
+      store.health = { ok: d.healthy, provider: d.provider, components: d.components, limits: d.limits, cdnEnabled: d.cdnEnabled, checkedAt: d.checkedAt };
+      // The upload page shows (and enforces client-side) the limit the server really uses
+      if (d.limits && d.limits.maxUploadMb > 0) {
+        VF.config.maxUploadBytes = d.limits.maxUploadMb * 1024 * 1024;
+        VF.config.maxUploadLabel = formatLimit(d.limits.maxUploadMb);
+      }
     } catch {
       store.health = { ok: false, provider: null, components: null, checkedAt: new Date().toISOString() };
     }
     store.emit('health');
+  };
+
+  // Totals, queue depth and processing engine, for the dashboard and System page
+  VF.refreshOverview = async function refreshOverview() {
+    try {
+      const res = await fetch('/api/admin/overview');
+      const json = await res.json();
+      if (json.success) { store.overview = json.data; store.emit('overview'); }
+    } catch { /* the next poll will retry */ }
   };
 
   function renderConnection() {
@@ -287,21 +330,6 @@
     window.scrollTo(0, 0);
   }
 
-  // ─── Server settings ───────────────────────────────────────
-  const formatLimit = (mb) => (mb >= 1024 ? `${+(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
-
-  async function loadServerConfig() {
-    try {
-      const res = await fetch('/api/config', { signal: AbortSignal.timeout(2000) });
-      const json = await res.json();
-      const mb = json.success && json.data.maxUploadMb;
-      if (mb > 0) {
-        VF.config.maxUploadBytes = mb * 1024 * 1024;
-        VF.config.maxUploadLabel = formatLimit(mb);
-      }
-    } catch { /* keep the defaults; the server still enforces its own limit */ }
-  }
-
   // ─── Boot ──────────────────────────────────────────────────
   function renderBadges() {
     const jobs = store.activeCount();
@@ -318,12 +346,49 @@
     if (jobs > 0) document.title = `(${jobs}) ${document.title}`;
   }
 
+  // Resolves true when the admin may use the app. Otherwise shows the sign-in screen.
+  async function ensureSession() {
+    let session = null;
+    try { session = (await (await nativeFetch('/api/admin/session')).json()).data; } catch { /* handled below */ }
+    if (!session) { showLogin('Could not reach the server.'); return false; }
+    if (session.mode === 'locked') {
+      showLogin('Admin is disabled: set ADMIN_API_KEY on the server to enable it.');
+      document.getElementById('login-form').querySelectorAll('input, button').forEach((el) => { el.disabled = true; });
+      return false;
+    }
+    document.getElementById('signout').hidden = session.mode !== 'protected';
+    if (session.loginRequired && !session.authenticated) { showLogin(); return false; }
+    return true;
+  }
+
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('login-submit');
+    btn.disabled = true;
+    try {
+      const res = await nativeFetch('/api/admin/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: document.getElementById('login-key').value }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error?.message || 'Sign-in failed');
+      location.reload();
+    } catch (err) {
+      showLogin(err.message);
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('signout').addEventListener('click', async () => {
+    await nativeFetch('/api/admin/logout', { method: 'POST' }).catch(() => {});
+    location.reload();
+  });
+
   VF.start = async function start() {
     document.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = VF.icon(el.dataset.icon, 18); });
-    document.getElementById('user-name').textContent = VF.config.userName;
-    document.getElementById('avatar').textContent = VF.config.userName.charAt(0).toUpperCase();
+    if (!(await ensureSession())) return;
 
-    // Topbar search always searches the library
+    // Topbar search always searches the video list
     const search = document.getElementById('global-search');
     let timer;
     search.addEventListener('input', () => {
@@ -352,9 +417,9 @@
     renderConnection();
     renderBell();
     initSSE();
-    await loadServerConfig(); // before the first page renders, so the upload page shows the real limit
-    VF.refreshHealth();
+    await Promise.all([VF.refreshHealth(), VF.refreshOverview()]); // so the first page already has real numbers
     setInterval(VF.refreshHealth, 30000);
+    setInterval(() => { if (!document.hidden) VF.refreshOverview(); }, 5000);
     setInterval(() => { if (!bellPop.classList.contains('hidden')) renderBell(); }, 30000);
     navigate();
   };

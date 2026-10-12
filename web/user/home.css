@@ -205,3 +205,11 @@ main { flex: 1; outline: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }
+
+/* History page */
+.page-head-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+.page-head-row .page-title { margin-bottom: 0; }
+.hcard .gthumb { margin-bottom: 0.5rem; }
+.hcard .gthumb .tile-prog { z-index: 1; }
+.link-small { margin-top: 0.3rem; padding: 0; border: none; background: none; color: var(--text-3); font-size: 0.76rem; text-decoration: underline; }
+.link-small:hover { color: #fff; }

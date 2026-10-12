@@ -16,10 +16,27 @@ export interface VideoMetadata {
   bitrate?: number;   // kbps
 }
 
+// One line in a video's processing log, shown to admins only
+export interface VideoEvent {
+  at: string;         // ISO timestamp
+  level: 'info' | 'warn' | 'error';
+  message: string;
+}
+
+// Renditions an admin can choose to generate (heights in pixels)
+export const AVAILABLE_QUALITIES = [360, 480, 720, 1080] as const;
+
 export interface VideoRecord {
   id: string;
   originalName: string;
+  title?: string;                  // display title; falls back to originalName
   status: VideoStatus;
+  published?: boolean;             // visible to the public site (still requires status COMPLETED)
+  publishedAt?: string;
+  autoPublish?: boolean;           // publish automatically when processing completes
+  qualities?: number[];            // renditions to generate; all when omitted
+  attempts?: number;               // processing attempts so far
+  events?: VideoEvent[];           // processing log (capped)
   rawObjectKey?: string;
   hlsPlaylistUrl?: string;
   thumbnailUrl?: string;

@@ -1,11 +1,14 @@
 /* ============================================================
-   VideoStream — pages: Dashboard, My Videos, Processing Jobs,
-   Settings and Watch. Depends on common.js and app.js.
+   VideoStream Admin — pages: Dashboard, Videos, Processing Jobs,
+   Logs, System and the preview player.
+   Depends on common.js and app.js.
    ============================================================ */
 (function () {
   const VF = window.VF;
   const { esc, formatBytes, formatDate, timeAgo, formatDuration, toast, confirmDialog, dialog, reconcile, copyText, icon } = VF;
   const store = VF.store;
+  const MAX_ATTEMPTS = 3;
+  const QUALITIES = [360, 480, 720, 1080];
 
   // ─── Shared helpers ────────────────────────────────────────
   const STATUS_LABEL = {
@@ -13,10 +16,16 @@
     PROCESSING: 'Processing', COMPLETED: 'Completed', FAILED: 'Failed',
   };
   const pill = (status) => `<span class="pill pill-${esc(status)}">${esc(STATUS_LABEL[status] || status)}</span>`;
+  const titleOf = (v) => v.title || v.originalName;
   const qualityOf = (v) => (v.metadata && v.metadata.height ? `${v.metadata.height}p` : '—');
   const durationOf = (v) => (v.metadata && v.metadata.duration ? formatDuration(v.metadata.duration) : '—');
   const isActive = (v) => VF.ACTIVE_STATUSES.includes(v.status);
   const watchHref = (v) => (v.status === 'COMPLETED' ? `#/watch/${encodeURIComponent(v.id)}` : '#/jobs');
+  const renditionsOf = (v) => (v.qualities && v.qualities.length ? v.qualities.map((q) => `${q}p`).join(', ') : 'All');
+
+  const visibilityPill = (v) => (v.status !== 'COMPLETED'
+    ? '<span class="muted">—</span>'
+    : v.published ? '<span class="pill pill-COMPLETED">Published</span>' : '<span class="pill pill-PENDING">Draft</span>');
 
   const thumb = (v) => (v.thumbnailUrl
     ? `<img class="thumb" src="${esc(v.thumbnailUrl)}" alt="" loading="lazy" />`
@@ -30,7 +39,7 @@
     if (v.status !== 'PROCESSING') return STATUS_LABEL[v.status] || v.status;
     if (p < 10) return 'Preparing video';
     if (p <= 80) return 'Encoding resolutions';
-    if (p < 91) return 'Creating thumbnail & captions';
+    if (p < 91) return 'Creating thumbnail';
     return 'Publishing files';
   }
 
@@ -44,20 +53,32 @@
     }
   }, true);
 
+  // Calls the admin API and returns its data, or throws an Error with the server's message
+  async function api(path, { method = 'GET', body } = {}) {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = await res.json().catch(() => null);
+    if (!json || !json.success) throw new Error(json?.error?.message || `Request failed (HTTP ${res.status})`);
+    return json.data;
+  }
+
+  // ─── Actions ───────────────────────────────────────────────
   async function deleteVideo(id) {
     const video = store.videos[id];
     const ok = await confirmDialog({
       title: 'Delete this video?',
-      message: `"${video ? video.originalName : id}" and all of its transcoded files will be permanently removed.`,
+      message: `"${video ? titleOf(video) : id}" and all of its files will be permanently removed.${video && video.published ? ' It is published, so it will disappear from the public site.' : ''}`,
       confirmText: 'Delete',
       danger: true,
     });
     if (!ok) return false;
     try {
-      const res = await fetch(`/api/videos/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error?.message || 'Delete failed');
+      await api(`/api/admin/videos/${encodeURIComponent(id)}`, { method: 'DELETE' });
       VF.removeVideo(id);
+      VF.refreshOverview();
       toast('Video deleted', 'success');
       return true;
     } catch (err) {
@@ -66,14 +87,49 @@
     }
   }
 
+  async function setPublished(id, published) {
+    try {
+      const video = await api(`/api/admin/videos/${encodeURIComponent(id)}/publish`, { method: 'POST', body: { published } });
+      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...video } };
+      store.emit('videos');
+      VF.refreshOverview();
+      toast(published ? 'Published to the public site' : 'Unpublished. It is now a draft.', 'success', 2500);
+      return true;
+    } catch (err) {
+      toast(err.message, 'error');
+      return false;
+    }
+  }
+
+  async function retryVideo(id, qualities) {
+    try {
+      const video = await api(`/api/admin/videos/${encodeURIComponent(id)}/retry`, { method: 'POST', body: qualities ? { qualities } : {} });
+      store.videos = { ...store.videos, [id]: { ...store.videos[id], ...video } };
+      store.emit('videos');
+      VF.refreshOverview();
+      toast('Queued for processing again', 'success', 2500);
+      return true;
+    } catch (err) {
+      toast(err.message, 'error');
+      return false;
+    }
+  }
+
+  const canRetry = (v) => ['FAILED', 'COMPLETED'].includes(v.status);
+
   function rowMenu(anchor, video) {
     const items = [];
     if (video.status === 'COMPLETED') {
-      items.push({ label: 'Watch', icon: 'play', onClick: () => { location.hash = watchHref(video); } });
-      if (video.hlsPlaylistUrl) items.push({ label: 'Copy stream URL', icon: 'copy', onClick: () => copyText(video.hlsPlaylistUrl, 'Stream URL copied') });
+      items.push({ label: 'Preview', icon: 'play', onClick: () => { location.hash = watchHref(video); } });
+      items.push(video.published
+        ? { label: 'Unpublish', icon: 'x', onClick: () => setPublished(video.id, false) }
+        : { label: 'Publish', icon: 'check', onClick: () => setPublished(video.id, true) });
+      if (video.hlsPlaylistUrl) items.push({ label: 'Copy stream URL', icon: 'copy', onClick: () => copyText(new URL(video.hlsPlaylistUrl, location.origin).href, 'Stream URL copied') });
     } else {
-      items.push({ label: 'View job', icon: 'eye', onClick: () => openJobDialog(video.id) });
+      items.push({ label: 'View job & log', icon: 'eye', onClick: () => openJobDialog(video.id) });
     }
+    items.push({ label: 'Edit settings', icon: 'settings', onClick: () => openEditDialog(video.id) });
+    if (canRetry(video)) items.push({ label: video.status === 'FAILED' ? 'Retry processing' : 'Reprocess', icon: 'refresh', onClick: () => retryVideo(video.id) });
     items.push({ label: 'Delete', icon: 'trash', danger: true, onClick: () => deleteVideo(video.id) });
     VF.menu(anchor, items);
   }
@@ -91,111 +147,238 @@
     return Array.from({ length: n }, () => `<tr class="sk-row">${Array.from({ length: cols }, () => '<td><span class="sk-line"></span></td>').join('')}</tr>`).join('');
   }
 
+  const kv = (label, value) => `<div class="kv"><span>${esc(label)}</span><span>${value}</span></div>`;
+
+  // ─── Edit settings dialog ──────────────────────────────────
+  function openEditDialog(id) {
+    const v = store.videos[id];
+    if (!v) return;
+    const selected = v.qualities && v.qualities.length ? v.qualities : QUALITIES;
+    const modal = dialog({
+      title: 'Video settings',
+      html: `
+        <form id="edit-form" class="edit-form">
+          <label class="field"><span>Title</span>
+            <input class="input" name="title" maxlength="120" value="${esc(v.title || '')}" placeholder="${esc(v.originalName)}" />
+            <small>Shown on the public site. Leave empty to use the file name.</small></label>
+          <fieldset class="field"><legend>Output qualities</legend>
+            ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" ${selected.includes(q) ? 'checked' : ''} /> ${q}p</label>`).join('')}
+            <small>Applied the next time this video is processed. Sizes above the source (${esc(qualityOf(v))}) are skipped.</small></fieldset>
+          <label class="check"><input type="checkbox" name="autoPublish" ${v.autoPublish ? 'checked' : ''} /> Publish automatically when processing finishes</label>
+          <div class="alert-box hidden" id="edit-error"></div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+            ${canRetry(v) ? '<button type="button" class="btn btn-ghost" id="save-reprocess">Save &amp; reprocess</button>' : ''}
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>`,
+    });
+    const form = modal.el.querySelector('#edit-form');
+    const errBox = modal.el.querySelector('#edit-error');
+    const read = () => ({
+      title: form.title.value.trim(),
+      qualities: [...form.querySelectorAll('input[name="quality"]:checked')].map((el) => Number(el.value)),
+      autoPublish: form.autoPublish.checked,
+    });
+    async function save(reprocess) {
+      const values = read();
+      errBox.classList.add('hidden');
+      if (values.qualities.length === 0) { errBox.textContent = 'Choose at least one quality.'; errBox.classList.remove('hidden'); return; }
+      try {
+        const updated = await api(`/api/admin/videos/${encodeURIComponent(id)}`, { method: 'PATCH', body: values });
+        store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
+        store.emit('videos');
+        if (reprocess) await retryVideo(id, values.qualities);
+        else toast('Settings saved', 'success', 2200);
+        modal.close();
+      } catch (err) {
+        errBox.textContent = err.message;
+        errBox.classList.remove('hidden');
+      }
+    }
+    form.addEventListener('submit', (e) => { e.preventDefault(); save(false); });
+    const sr = modal.el.querySelector('#save-reprocess');
+    if (sr) sr.addEventListener('click', () => save(true));
+  }
+
+  // ─── Job details + processing log dialog ───────────────────
+  function logLinesHtml(events) {
+    if (!events.length) return '<p class="muted">No log lines yet.</p>';
+    return `<ul class="log-list">${events.map((e) => `
+      <li class="log-${esc(e.level)}"><span class="log-time">${esc(new Date(e.at).toLocaleTimeString())}</span>
+        <span class="lvl lvl-${esc(e.level)}">${esc(e.level)}</span><span class="log-msg">${esc(e.message)}</span></li>`).join('')}</ul>`;
+  }
+
+  async function openJobDialog(id) {
+    const v = store.videos[id];
+    if (!v) return;
+    const started = v.processingStartedAt || v.createdAt;
+    const modal = dialog({
+      title: titleOf(v),
+      wide: true,
+      html: `
+        ${kv('Job ID', `<code>${esc(v.id)}</code>`)}
+        ${kv('Status', pill(v.status))}
+        ${kv('Progress', `${Math.round(v.status === 'COMPLETED' ? 100 : v.progress || 0)}% · ${esc(phaseOf(v))}`)}
+        ${kv('Attempts', `${v.attempts || 0}${v.attempts ? ` (up to ${MAX_ATTEMPTS} per run)` : ''}`)}
+        ${kv('Renditions', esc(renditionsOf(v)))}
+        ${kv('Started', esc(formatDate(started)))}
+        ${v.completedAt ? kv('Completed', esc(formatDate(v.completedAt))) : ''}
+        ${v.failedAt ? kv('Failed', esc(formatDate(v.failedAt))) : ''}
+        ${v.error ? `<div class="alert-box">${esc(v.error)}</div>` : ''}
+        <h4 class="subhead">Processing log</h4>
+        <div id="job-log"><p class="muted">Loading…</p></div>
+        <div class="modal-actions">
+          ${v.status === 'COMPLETED' ? `<a class="btn btn-ghost" href="#/watch/${encodeURIComponent(v.id)}" data-close>Preview</a>` : ''}
+          ${canRetry(v) ? `<button class="btn btn-primary" id="job-retry">${icon('refresh', 15)} ${v.status === 'FAILED' ? 'Retry processing' : 'Reprocess'}</button>` : ''}
+          <button class="btn btn-ghost" data-close>Close</button>
+        </div>`,
+    });
+    const retry = modal.el.querySelector('#job-retry');
+    if (retry) retry.addEventListener('click', async () => { if (await retryVideo(id)) modal.close(); });
+    try {
+      const data = await api(`/api/admin/videos/${encodeURIComponent(id)}/logs`);
+      const target = modal.el.querySelector('#job-log');
+      if (target) target.innerHTML = logLinesHtml(data.events);
+    } catch (err) {
+      const target = modal.el.querySelector('#job-log');
+      if (target) target.innerHTML = `<div class="alert-box">${esc(err.message)}</div>`;
+    }
+  }
+
   // ═════════════════════════════════════════════════════════
   // Dashboard
   // ═════════════════════════════════════════════════════════
   VF.views.dashboard = {
     title: () => 'Dashboard',
     mount(root) {
-      const hour = new Date().getHours();
-      const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
       root.innerHTML = `
-        <div class="page-head">
-          <h1>${greeting}, <span id="greet-name">${esc(VF.config.userName)}</span> 👋</h1>
-          <p>Here's what's happening with your videos today.</p>
-        </div>
+        <div class="page-head"><h1>Dashboard</h1><p>Uploads, processing and publishing at a glance.</p></div>
 
         <section class="stat-grid" aria-label="Summary">
-          <div class="stat-card"><span class="stat-ico ico-blue">${icon('play', 20)}</span><div><div class="stat-label">Total Videos</div><div class="stat-value" id="s-total">0</div><div class="stat-sub" id="s-total-sub"></div></div></div>
-          <div class="stat-card"><span class="stat-ico ico-green">${icon('clock', 20)}</span><div><div class="stat-label">Processing</div><div class="stat-value" id="s-proc">0</div><div class="stat-sub" id="s-proc-sub"></div></div></div>
-          <div class="stat-card"><span class="stat-ico ico-purple">${icon('layers', 20)}</span><div><div class="stat-label">Ready to Watch</div><div class="stat-value" id="s-ready">0</div><div class="stat-sub" id="s-ready-sub"></div></div></div>
-          <div class="stat-card"><span class="stat-ico ico-orange">${icon('database', 20)}</span><div><div class="stat-label">Storage Used</div><div class="stat-value" id="s-store">0 B</div><div class="stat-sub" id="s-store-sub"></div></div></div>
+          <div class="stat-card"><span class="stat-ico ico-blue">${icon('film', 20)}</span><div><div class="stat-label">Videos</div><div class="stat-value" id="s-total">0</div><div class="stat-sub" id="s-total-sub"></div></div></div>
+          <div class="stat-card"><span class="stat-ico ico-green">${icon('eye', 20)}</span><div><div class="stat-label">Published</div><div class="stat-value" id="s-pub">0</div><div class="stat-sub muted-sub" id="s-pub-sub"></div></div></div>
+          <div class="stat-card"><span class="stat-ico ico-orange">${icon('clock', 20)}</span><div><div class="stat-label">In progress</div><div class="stat-value" id="s-prog">0</div><div class="stat-sub muted-sub" id="s-prog-sub"></div></div></div>
+          <div class="stat-card"><span class="stat-ico ico-red">${icon('alert', 20)}</span><div><div class="stat-label">Failed</div><div class="stat-value" id="s-fail">0</div><div class="stat-sub" id="s-fail-sub"></div></div></div>
+        </section>
+
+        <div class="two-col">
+          <section class="card"><div class="card-head"><h2 class="card-title">Processing engine</h2><a class="link-btn" href="#/system">Details ${icon('forward', 14)}</a></div><div id="engine"></div></section>
+          <section class="card"><div class="card-head"><h2 class="card-title">Job queue</h2><a class="link-btn" href="#/jobs">All jobs ${icon('forward', 14)}</a></div><div id="queue"></div></section>
+        </div>
+
+        <section class="card hidden" id="attention">
+          <div class="card-head"><h2 class="card-title">Needs attention</h2></div>
+          <div id="attention-list"></div>
         </section>
 
         <section class="card">
-          <div class="card-head"><h2 class="card-title">Recent Videos</h2><a class="link-btn" href="#/videos">View all ${icon('forward', 14)}</a></div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th>Name</th><th>Status</th><th>Duration</th><th>Uploaded At</th></tr></thead>
-              <tbody id="recent"></tbody>
-            </table>
-          </div>
+          <div class="card-head"><h2 class="card-title">Recent videos</h2><a class="link-btn" href="#/videos">View all ${icon('forward', 14)}</a></div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Video</th><th>Status</th><th>Visibility</th><th>Duration</th><th>Uploaded</th></tr></thead>
+            <tbody id="recent"></tbody></table></div>
           <div class="empty hidden" id="recent-empty"></div>
         </section>`;
 
       const tbody = root.querySelector('#recent');
       const empty = root.querySelector('#recent-empty');
       rowNavigation(tbody);
-      tbody.innerHTML = skeletonRows(4, 3);
+      tbody.innerHTML = skeletonRows(5, 3);
+      const set = (id, text) => { root.querySelector(`#${id}`).textContent = text; };
 
       function render() {
-        const all = store.list();
-        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-        const today = all.filter((v) => new Date(v.createdAt) >= startOfDay).length;
-        const processing = all.filter(isActive);
-        const queued = all.filter((v) => v.status === 'UPLOADED').length;
-        const ready = all.filter((v) => v.status === 'COMPLETED').length;
-        const failed = all.filter((v) => v.status === 'FAILED').length;
-        const bytes = all.reduce((sum, v) => sum + (v.fileSize || 0), 0);
-        const set = (id, text) => { root.querySelector(`#${id}`).textContent = text; };
+        const o = store.overview;
+        if (o) {
+          set('s-total', o.totals.videos);
+          set('s-total-sub', `+${o.totals.uploadedToday} in the last 24 h · ${formatBytes(o.totals.storageBytes)}`);
+          set('s-pub', o.totals.published);
+          set('s-pub-sub', `${o.totals.drafts} draft${o.totals.drafts === 1 ? '' : 's'} ready to publish`);
+          set('s-prog', o.totals.inProgress);
+          set('s-prog-sub', o.retrying ? `${o.retrying} being retried` : 'no retries');
+          set('s-fail', o.totals.failed);
+          set('s-fail-sub', o.totals.failed ? 'needs your attention' : 'none');
+          root.querySelector('#s-fail-sub').classList.toggle('bad', o.totals.failed > 0);
 
-        set('s-total', all.length);
-        set('s-total-sub', `+${today} today`);
-        set('s-proc', processing.length);
-        set('s-proc-sub', queued ? `${queued} in queue` : 'nothing waiting');
-        set('s-ready', ready);
-        set('s-ready-sub', failed ? `${failed} failed` : 'all good');
-        root.querySelector('#s-ready-sub').classList.toggle('bad', failed > 0);
-        set('s-store', formatBytes(bytes));
-        set('s-store-sub', `original uploads · ${all.length} video${all.length === 1 ? '' : 's'}`);
+          const c = o.compute;
+          root.querySelector('#engine').innerHTML = `
+            ${kv('Engine', esc(c.engine))}
+            ${kv('Running now', `<strong>${c.running}</strong> job${c.running === 1 ? '' : 's'}`)}
+            ${c.available ? '' : `<div class="alert-box">Could not read the engine status: ${esc(c.error || 'unknown error')}</div>`}
+            ${(c.tasks || []).map((t) => kv(`Task ${t.id.slice(0, 8)}`, `${esc(t.status)}${t.startedAt ? ` · started ${esc(timeAgo(t.startedAt))}` : ''}`)).join('')}`;
+
+          const q = o.queue;
+          root.querySelector('#queue').innerHTML = q.available === false
+            ? `<div class="alert-box">Could not read the queue: ${esc(q.error || 'unknown error')}</div>`
+            : `<div class="metrics">
+                <div><strong>${q.waiting}</strong><span>Waiting</span></div>
+                <div><strong>${q.inFlight}</strong><span>In flight</span></div>
+                <div><strong>${q.delayed}</strong><span>Delayed (retry)</span></div></div>
+              ${(q.jobs || []).slice(0, 4).map((j) => {
+                const v = store.videos[j.videoId];
+                return kv(esc(v ? titleOf(v) : j.videoId), `${esc(j.state)}${j.retryCount ? ` · retry ${j.retryCount}` : ''}`);
+              }).join('')}`;
+        }
 
         if (!store.loaded) return;
+        const all = store.list();
         if (tbody.querySelector('.sk-row')) tbody.innerHTML = '';
+
+        const failed = all.filter((v) => v.status === 'FAILED');
+        root.querySelector('#attention').classList.toggle('hidden', failed.length === 0);
+        root.querySelector('#attention-list').innerHTML = failed.slice(0, 5).map((v) => `
+          <div class="attn-row"><div><div class="cell-title">${esc(titleOf(v))}</div><div class="cell-sub err-text">${esc(v.error || 'Processing failed')}</div></div>
+          <div class="attn-actions"><button class="btn btn-ghost btn-sm" data-job="${esc(v.id)}">View log</button>
+          <button class="btn btn-primary btn-sm" data-retry="${esc(v.id)}">${icon('refresh', 14)} Retry</button></div></div>`).join('');
+
         empty.classList.toggle('hidden', all.length > 0);
-        empty.innerHTML = all.length ? '' : `${icon('film', 32)}<h3>No videos yet</h3><p>Upload your first video and it will show up here.</p><a class="btn btn-primary" href="#/upload">Upload a video</a>`;
+        empty.innerHTML = all.length ? '' : `${icon('film', 32)}<h3>No videos yet</h3><p>Upload your first video to get started.</p><a class="btn btn-primary" href="#/upload">Upload a video</a>`;
         reconcile(tbody, all.slice(0, 5), {
           key: (v) => v.id,
           html: (v) => `<tr class="clickable" data-href="${watchHref(v)}">
-            <td><a class="name-cell" href="${watchHref(v)}">${thumb(v)}<span><span class="cell-title">${esc(v.originalName)}</span>
+            <td><a class="name-cell" href="${watchHref(v)}">${thumb(v)}<span><span class="cell-title">${esc(titleOf(v))}</span>
               <span class="cell-sub">${esc(qualityOf(v))} • ${formatBytes(v.fileSize)}</span></span></a></td>
             <td>${pill(v.status)}${v.status === 'PROCESSING' ? ` <span class="pct">${Math.round(v.progress || 0)}%</span>` : ''}</td>
-            <td>${durationOf(v)}</td>
+            <td>${visibilityPill(v)}</td><td>${durationOf(v)}</td>
             <td class="muted">${esc(timeAgo(v.createdAt))}</td></tr>`,
         });
       }
 
+      root.querySelector('#attention').addEventListener('click', (e) => {
+        const job = e.target.closest('[data-job]');
+        const retry = e.target.closest('[data-retry]');
+        if (job) openJobDialog(job.dataset.job);
+        if (retry) retryVideo(retry.dataset.retry);
+      });
+
       render();
-      const unsub = store.subscribe((t) => { if (t.has('videos')) render(); });
+      const unsub = store.subscribe((t) => { if (t.has('videos') || t.has('overview')) render(); });
       const tick = setInterval(render, 30000);
       return () => { unsub(); clearInterval(tick); };
     },
   };
 
   // ═════════════════════════════════════════════════════════
-  // My Videos
+  // Videos (manage: publish, edit, reprocess, delete)
   // ═════════════════════════════════════════════════════════
   VF.views.videos = {
-    title: () => 'My Videos',
+    title: () => 'Videos',
     mount(root) {
       let page = 1;
       root.innerHTML = `
-        <div class="page-head"><h1>My Videos</h1><p>Manage and play your processed videos.</p></div>
+        <div class="page-head"><h1>Videos</h1><p>Publish, edit, reprocess and delete your videos.</p></div>
         <section class="card">
           <div class="toolbar">
             <label class="field-search"><span class="sr-only">Search videos</span>${icon('search', 16)}
-              <input type="search" id="v-search" placeholder="Search by name or ID…" autocomplete="off" /></label>
-            <label><span class="sr-only">Filter by status</span>
+              <input type="search" id="v-search" placeholder="Search by title, file name or ID…" autocomplete="off" /></label>
+            <label><span class="sr-only">Filter</span>
               <select id="v-status" class="select">
-                <option value="all">All Status</option><option value="COMPLETED">Completed</option>
-                <option value="active">Processing</option><option value="FAILED">Failed</option>
+                <option value="all">All videos</option><option value="published">Published</option>
+                <option value="draft">Drafts</option><option value="active">In progress</option><option value="FAILED">Failed</option>
               </select></label>
           </div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th>Thumbnail</th><th>Name</th><th>Duration</th><th>Quality</th><th>Status</th><th>Uploaded At</th><th class="right">Actions</th></tr></thead>
-              <tbody id="rows"></tbody>
-            </table>
-          </div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Video</th><th>Status</th><th>Visibility</th><th>Renditions</th><th>Duration</th><th>Uploaded</th><th class="right">Actions</th></tr></thead>
+            <tbody id="rows"></tbody></table></div>
           <div class="empty hidden" id="empty"></div>
           <div class="pager hidden" id="pager"><span id="range"></span>
             <div><button class="btn btn-ghost btn-sm" id="prev">Previous</button> <button class="btn btn-ghost btn-sm" id="next">Next</button></div></div>
@@ -213,9 +396,14 @@
 
       const matches = (v) => {
         const { search: q, status: s } = store.ui;
+        if (s === 'published' && !(v.published && v.status === 'COMPLETED')) return false;
+        if (s === 'draft' && !(!v.published && v.status === 'COMPLETED')) return false;
         if (s === 'active' && !isActive(v)) return false;
-        if ((s === 'COMPLETED' || s === 'FAILED') && v.status !== s) return false;
-        if (q && !v.originalName.toLowerCase().includes(q.toLowerCase()) && !v.id.toLowerCase().includes(q.toLowerCase())) return false;
+        if (s === 'FAILED' && v.status !== 'FAILED') return false;
+        if (q) {
+          const needle = q.toLowerCase();
+          if (!titleOf(v).toLowerCase().includes(needle) && !v.originalName.toLowerCase().includes(needle) && !v.id.toLowerCase().includes(needle)) return false;
+        }
         return true;
       };
 
@@ -233,12 +421,15 @@
         reconcile(tbody, slice, {
           key: (v) => v.id,
           html: (v) => `<tr class="clickable" data-href="${watchHref(v)}">
-            <td>${thumb(v)}</td>
-            <td><a class="cell-title link-plain" href="${watchHref(v)}">${esc(v.originalName)}</a><span class="cell-sub">${formatBytes(v.fileSize)}</span></td>
-            <td>${durationOf(v)}</td><td>${esc(qualityOf(v))}</td>
+            <td><a class="name-cell" href="${watchHref(v)}">${thumb(v)}<span><span class="cell-title">${esc(titleOf(v))}</span>
+              <span class="cell-sub">${v.title ? `${esc(v.originalName)} • ` : ''}${formatBytes(v.fileSize)}</span></span></a></td>
             <td>${pill(v.status)}${v.status === 'PROCESSING' ? ` <span class="pct">${Math.round(v.progress || 0)}%</span>` : ''}</td>
+            <td>${v.status === 'COMPLETED'
+              ? `<button class="switch-btn ${v.published ? 'on' : ''}" role="switch" aria-checked="${!!v.published}" data-publish="${esc(v.id)}" data-to="${!v.published}" aria-label="${v.published ? 'Unpublish' : 'Publish'} ${esc(titleOf(v))}"><span class="knob"></span></button> <span class="switch-label">${v.published ? 'Published' : 'Draft'}</span>`
+              : '<span class="muted">—</span>'}</td>
+            <td class="muted">${esc(renditionsOf(v))}</td><td>${durationOf(v)}</td>
             <td class="muted">${esc(timeAgo(v.createdAt))}</td>
-            <td class="right"><button class="icon-btn" data-menu-anchor data-id="${esc(v.id)}" aria-label="Actions for ${esc(v.originalName)}" aria-haspopup="menu">${icon('dots', 18)}</button></td></tr>`,
+            <td class="right"><button class="icon-btn" data-menu-anchor data-id="${esc(v.id)}" aria-label="Actions for ${esc(titleOf(v))}" aria-haspopup="menu">${icon('dots', 18)}</button></td></tr>`,
         });
 
         const none = filtered.length === 0;
@@ -269,6 +460,8 @@
         store.emit('ui');
       });
       tbody.addEventListener('click', (e) => {
+        const toggle = e.target.closest('[data-publish]');
+        if (toggle) { setPublished(toggle.dataset.publish, toggle.dataset.to === 'true'); return; }
         const btn = e.target.closest('[data-menu-anchor]');
         if (btn && store.videos[btn.dataset.id]) rowMenu(btn, store.videos[btn.dataset.id]);
       });
@@ -288,57 +481,31 @@
   // ═════════════════════════════════════════════════════════
   let jobsTab = 'all';
 
-  function openJobDialog(id) {
-    const v = store.videos[id];
-    if (!v) return;
-    const row = (label, value) => `<div class="kv"><span>${esc(label)}</span><span>${value}</span></div>`;
-    const started = v.processingStartedAt || v.createdAt;
-    VF.dialog({
-      title: v.originalName,
-      html: `
-        ${row('Job ID', `<code>${esc(v.id)}</code>`)}
-        ${row('Status', pill(v.status))}
-        ${row('Progress', `${Math.round(v.status === 'COMPLETED' ? 100 : v.progress || 0)}% · ${esc(phaseOf(v))}`)}
-        ${row('Started', esc(formatDate(started)))}
-        ${v.completedAt ? row('Completed', esc(formatDate(v.completedAt))) : ''}
-        ${v.failedAt ? row('Failed', esc(formatDate(v.failedAt))) : ''}
-        ${row('Original size', formatBytes(v.fileSize))}
-        ${v.error ? `<div class="alert-box">${esc(v.error)}</div>` : ''}
-        <div class="modal-actions">
-          ${v.status === 'COMPLETED' ? `<a class="btn btn-primary" href="#/watch/${encodeURIComponent(v.id)}" data-close>Watch video</a>` : ''}
-          <button class="btn btn-ghost" data-close>Close</button>
-        </div>`,
-    });
-  }
-
   VF.views.jobs = {
     title: () => 'Processing Jobs',
     mount(root) {
       root.innerHTML = `
-        <div class="page-head"><h1>Processing Jobs</h1><p>Track the status of your video processing jobs.</p></div>
+        <div class="page-head"><h1>Processing Jobs</h1><p>Monitor transcoding, retries and failures.</p></div>
         <section class="card">
           <div class="tabs" role="tablist" id="job-tabs"></div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th>ID</th><th>Video Name</th><th>Status</th><th>Progress</th><th>Started At</th><th class="right">Actions</th></tr></thead>
-              <tbody id="jobs"></tbody>
-            </table>
-          </div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>ID</th><th>Video</th><th>Status</th><th>Attempts</th><th>Progress</th><th>Started</th><th class="right">Actions</th></tr></thead>
+            <tbody id="jobs"></tbody></table></div>
           <div class="empty hidden" id="jobs-empty"></div>
         </section>`;
       const tbody = root.querySelector('#jobs');
       const empty = root.querySelector('#jobs-empty');
       const tabsEl = root.querySelector('#job-tabs');
-      tbody.innerHTML = skeletonRows(6, 4);
+      tbody.innerHTML = skeletonRows(7, 4);
 
-      const TABS = [['all', 'All'], ['active', 'Processing'], ['COMPLETED', 'Completed'], ['FAILED', 'Failed']];
+      const TABS = [['all', 'All'], ['active', 'In progress'], ['FAILED', 'Failed'], ['COMPLETED', 'Completed']];
       const inTab = (v, tab) => tab === 'all' || (tab === 'active' ? isActive(v) : v.status === tab);
 
       function progressCell(v) {
         const done = v.status === 'COMPLETED';
-        const pct = done ? 100 : ['PENDING', 'UPLOADING', 'UPLOADED'].includes(v.status) ? 0 : Math.round(v.progress || 0);
+        const waiting = ['PENDING', 'UPLOADING', 'UPLOADED'].includes(v.status);
+        const pct = done ? 100 : waiting ? 0 : Math.round(v.progress || 0);
         const cls = done ? 'bar-ok' : v.status === 'FAILED' ? 'bar-bad' : '';
-        const waiting = v.status === 'UPLOADED' || v.status === 'PENDING' || v.status === 'UPLOADING';
         return `<div class="prog"><span class="pct">${waiting ? 'Queued' : `${pct}%`}</span>
           <div class="progress ${waiting ? 'indeterminate' : ''}"><div class="progress-bar ${cls}" style="width:${waiting ? 35 : pct}%"></div></div></div>`;
       }
@@ -356,11 +523,13 @@
           key: (v) => v.id,
           html: (v) => `<tr>
             <td><code class="job-id">${esc(v.id.slice(0, 8))}</code></td>
-            <td><span class="cell-title">${esc(v.originalName)}</span><span class="cell-sub">${esc(phaseOf(v))}</span></td>
+            <td><span class="cell-title">${esc(titleOf(v))}</span><span class="cell-sub">${esc(phaseOf(v))}${v.status !== 'FAILED' && v.error ? ' · retrying' : ''}</span></td>
             <td>${pill(v.status)}</td>
+            <td>${v.attempts || 0}</td>
             <td>${progressCell(v)}</td>
             <td class="muted">${esc(timeAgo(v.processingStartedAt || v.createdAt))}</td>
-            <td class="right"><button class="btn btn-ghost btn-sm" data-job="${esc(v.id)}">View</button></td></tr>`,
+            <td class="right"><button class="btn btn-ghost btn-sm" data-job="${esc(v.id)}">Log</button>
+              ${v.status === 'FAILED' ? `<button class="btn btn-primary btn-sm" data-retry="${esc(v.id)}">Retry</button>` : ''}</td></tr>`,
         });
         empty.classList.toggle('hidden', list.length > 0);
         empty.innerHTML = list.length ? '' : `${icon('jobs', 32)}<h3>No jobs here</h3><p>${jobsTab === 'all' ? 'Upload a video to create a job.' : 'Nothing matches this tab right now.'}</p>`;
@@ -371,8 +540,10 @@
         if (tab) { jobsTab = tab.dataset.tab; render(); }
       });
       tbody.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-job]');
-        if (btn) openJobDialog(btn.dataset.job);
+        const job = e.target.closest('[data-job]');
+        const retry = e.target.closest('[data-retry]');
+        if (job) openJobDialog(job.dataset.job);
+        if (retry) retryVideo(retry.dataset.retry);
       });
 
       render();
@@ -383,63 +554,133 @@
   };
 
   // ═════════════════════════════════════════════════════════
-  // Settings
+  // Logs
   // ═════════════════════════════════════════════════════════
-  VF.views.settings = {
-    title: () => 'Settings',
+  VF.views.logs = {
+    title: () => 'Logs',
     mount(root) {
       root.innerHTML = `
-        <div class="page-head"><h1>Settings</h1><p>System status and preferences.</p></div>
-
+        <div class="page-head"><h1>Logs</h1><p>Processing activity across all videos, newest first.</p></div>
         <section class="card">
-          <div class="card-head"><h2 class="card-title">System Status</h2><button class="btn btn-ghost btn-sm" id="recheck">Check again</button></div>
-          <div id="health"></div>
-        </section>
-
-        <section class="card">
-          <div class="card-head"><h2 class="card-title">Preferences</h2></div>
-          <form class="form-row" id="name-form">
-            <label for="display-name">Display name</label>
-            <input id="display-name" class="input" maxlength="30" value="${esc(VF.config.userName)}" />
-            <button class="btn btn-primary" type="submit">Save</button>
-          </form>
-          <p class="opt-note">Shown in the greeting and top bar. Saved in this browser only.</p>
-        </section>
-
-        <section class="card">
-          <div class="card-head"><h2 class="card-title">Limits &amp; Developer Links</h2></div>
-          <div class="kv"><span>Maximum upload size</span><span>${VF.config.maxUploadLabel} per file</span></div>
-          <div class="kv"><span>Accepted formats</span><span>MP4, MOV, MKV</span></div>
-          <div class="kv"><span>API documentation</span><a href="/api/docs" target="_blank" rel="noopener">Open Swagger UI</a></div>
-          <div class="kv"><span>Prometheus metrics</span><a href="/metrics" target="_blank" rel="noopener">/metrics</a></div>
-          <div class="kv"><span>Detailed health</span><a href="/health/detailed" target="_blank" rel="noopener">/health/detailed</a></div>
+          <div class="toolbar">
+            <label class="field-search"><span class="sr-only">Search logs</span>${icon('search', 16)}
+              <input type="search" id="l-search" placeholder="Search messages or video names…" autocomplete="off" /></label>
+            <label><span class="sr-only">Level</span>
+              <select id="l-level" class="select"><option value="">All levels</option><option value="error">Errors</option><option value="warn">Warnings</option><option value="info">Info</option></select></label>
+            <button class="btn btn-ghost" id="l-refresh">${icon('refresh', 15)} Refresh</button>
+          </div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Time</th><th>Level</th><th>Video</th><th>Message</th></tr></thead>
+            <tbody id="log-rows"></tbody></table></div>
+          <div class="empty hidden" id="log-empty"></div>
+          <p class="opt-note" id="log-note"></p>
         </section>`;
 
-      const healthEl = root.querySelector('#health');
-      function renderHealth() {
-        const h = store.health;
-        if (!h) { healthEl.innerHTML = '<div class="kv"><span>Checking…</span><span></span></div>'; return; }
-        const names = { api: 'API server', database: 'Database', storage: 'Storage', queue: 'Job queue' };
-        const comps = h.components || {};
-        healthEl.innerHTML = `
-          <div class="kv"><span>Overall</span><span>${h.ok ? '<span class="pill pill-COMPLETED">Healthy</span>' : '<span class="pill pill-FAILED">Degraded</span>'}</span></div>
-          <div class="kv"><span>Provider</span><span>${h.provider ? esc(h.provider === 'aws' ? 'AWS (S3, SQS, ECS)' : 'Local (filesystem)') : '—'}</span></div>
-          ${Object.keys(names).map((k) => `<div class="kv"><span>${names[k]}</span><span>${comps[k] === 'UP' ? '<span class="pill pill-COMPLETED">Up</span>' : comps[k] ? '<span class="pill pill-FAILED">Down</span>' : '—'}</span></div>`).join('')}
-          <div class="kv"><span>Last checked</span><span>${esc(timeAgo(h.checkedAt))}</span></div>`;
+      const tbody = root.querySelector('#log-rows');
+      const empty = root.querySelector('#log-empty');
+      const search = root.querySelector('#l-search');
+      const level = root.querySelector('#l-level');
+      let lines = [];
+      let loaded = false;
+      tbody.innerHTML = skeletonRows(4, 5);
+
+      async function load() {
+        try {
+          const params = new URLSearchParams({ limit: '300' });
+          if (level.value) params.set('level', level.value);
+          if (search.value.trim()) params.set('q', search.value.trim());
+          const data = await api(`/api/admin/logs?${params}`);
+          lines = data.lines;
+          loaded = true;
+          if (tbody.querySelector('.sk-row')) tbody.innerHTML = '';
+          reconcile(tbody, lines, {
+            key: (l) => `${l.videoId}|${l.at}|${l.message}`,
+            html: (l) => `<tr class="log-${esc(l.level)}"><td class="muted nowrap" title="${esc(new Date(l.at).toLocaleString())}">${esc(new Date(l.at).toLocaleTimeString())} <span class="cell-sub">${esc(timeAgo(l.at))}</span></td>
+              <td><span class="lvl lvl-${esc(l.level)}">${esc(l.level)}</span></td>
+              <td><button class="link-btn" data-job="${esc(l.videoId)}">${esc(l.videoName)}</button></td>
+              <td class="log-msg">${esc(l.message)}</td></tr>`,
+          });
+          empty.classList.toggle('hidden', lines.length > 0);
+          empty.innerHTML = lines.length ? '' : `${icon('activity', 32)}<h3>No log lines</h3><p>Nothing matches these filters yet.</p>`;
+          root.querySelector('#log-note').textContent = data.total > lines.length ? `Showing the latest ${lines.length} of ${data.total} lines.` : '';
+        } catch (err) {
+          if (!loaded) toast(err.message, 'error');
+        }
       }
-      root.querySelector('#recheck').addEventListener('click', () => VF.refreshHealth());
-      root.querySelector('#name-form').addEventListener('submit', (e) => {
-        e.preventDefault();
-        const name = root.querySelector('#display-name').value.trim() || 'there';
-        VF.config.userName = name;
-        try { localStorage.setItem('vf-name', name); } catch { /* ignore */ }
-        document.getElementById('user-name').textContent = name;
-        document.getElementById('avatar').textContent = name.charAt(0).toUpperCase();
-        toast('Display name saved', 'success', 2500);
+
+      let timer;
+      search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 250); });
+      level.addEventListener('change', load);
+      root.querySelector('#l-refresh').addEventListener('click', load);
+      tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-job]');
+        if (btn && store.videos[btn.dataset.job]) openJobDialog(btn.dataset.job);
       });
 
-      renderHealth();
-      const unsub = store.subscribe((t) => { if (t.has('health')) renderHealth(); });
+      load();
+      const poll = setInterval(() => { if (!document.hidden) load(); }, 5000);
+      return () => clearInterval(poll);
+    },
+  };
+
+  // ═════════════════════════════════════════════════════════
+  // System (health, queue, engine, limits)
+  // ═════════════════════════════════════════════════════════
+  VF.views.system = {
+    title: () => 'System',
+    mount(root) {
+      root.innerHTML = `
+        <div class="page-head"><h1>System</h1><p>Health of the queue, storage and processing engine.</p></div>
+        <div class="two-col">
+          <section class="card"><div class="card-head"><h2 class="card-title">Health</h2><button class="btn btn-ghost btn-sm" id="recheck">${icon('refresh', 14)} Check again</button></div><div id="health"></div></section>
+          <section class="card"><div class="card-head"><h2 class="card-title">Limits</h2></div><div id="limits"></div></section>
+        </div>
+        <div class="two-col">
+          <section class="card"><div class="card-head"><h2 class="card-title">Job queue</h2></div><div id="queue"></div></section>
+          <section class="card"><div class="card-head"><h2 class="card-title">Processing engine</h2></div><div id="engine"></div></section>
+        </div>
+        <section class="card"><div class="card-head"><h2 class="card-title">Links</h2></div>
+          ${kv('Public site', '<a href="/" target="_blank" rel="noopener">Open the viewer app</a>')}
+          ${kv('API documentation', '<a href="/api/docs" target="_blank" rel="noopener">Swagger UI</a>')}
+          ${kv('Prometheus metrics', '<a href="/metrics" target="_blank" rel="noopener">/metrics</a>')}
+        </section>`;
+
+      const status = (ok) => (ok ? '<span class="pill pill-COMPLETED">Up</span>' : '<span class="pill pill-FAILED">Down</span>');
+
+      function render() {
+        const h = store.health;
+        const names = { api: 'API server', database: 'Database', storage: 'Storage', queue: 'Job queue' };
+        root.querySelector('#health').innerHTML = !h ? '<p class="muted">Checking…</p>' : `
+          ${kv('Overall', h.ok ? '<span class="pill pill-COMPLETED">Healthy</span>' : '<span class="pill pill-FAILED">Degraded</span>')}
+          ${kv('Provider', h.provider ? esc(h.provider === 'aws' ? 'AWS (S3, SQS, ECS)' : 'Local (filesystem)') : '—')}
+          ${Object.keys(names).map((k) => kv(names[k], h.components && h.components[k] ? status(h.components[k] === 'UP') : '—')).join('')}
+          ${kv('Last checked', esc(timeAgo(h.checkedAt)))}`;
+        const lim = h && h.limits;
+        root.querySelector('#limits').innerHTML = !lim ? '<p class="muted">—</p>' : `
+          ${kv('Maximum upload size', esc(VF.config.maxUploadLabel))}
+          ${kv('Accepted formats', esc(lim.allowedMimeTypes.map((m) => m.replace('video/', '').replace('x-matroska', 'mkv').replace('quicktime', 'mov')).join(', ').toUpperCase()))}
+          ${kv('Attempts per run', `${lim.maxAttempts} (retried after 15 s, then 45 s)`)}
+          ${kv('CDN', h.cdnEnabled ? 'Enabled' : 'Not configured')}`;
+
+        const o = store.overview;
+        if (!o) return;
+        const q = o.queue;
+        root.querySelector('#queue').innerHTML = q.available === false
+          ? `<div class="alert-box">Could not read the queue: ${esc(q.error || 'unknown error')}</div>`
+          : `<div class="metrics"><div><strong>${q.waiting}</strong><span>Waiting</span></div><div><strong>${q.inFlight}</strong><span>In flight</span></div><div><strong>${q.delayed}</strong><span>Delayed (retry)</span></div></div>
+            ${(q.jobs || []).map((j) => { const v = store.videos[j.videoId]; return kv(esc(v ? titleOf(v) : j.videoId), `${esc(j.state)}${j.retryCount ? ` · retry ${j.retryCount}` : ''}`); }).join('')}`;
+        const c = o.compute;
+        root.querySelector('#engine').innerHTML = `
+          ${kv('Engine', esc(c.engine))}
+          ${kv('Running now', `<strong>${c.running}</strong> job${c.running === 1 ? '' : 's'}`)}
+          ${c.available ? '' : `<div class="alert-box">Could not read the engine status: ${esc(c.error || 'unknown error')}</div>`}
+          ${(c.tasks || []).map((t) => kv(`Task ${t.id.slice(0, 8)}`, `${esc(t.status)}${t.cpu ? ` · ${esc(t.cpu)} CPU / ${esc(t.memory)} MiB` : ''}`)).join('')}
+          ${c.provider === 'aws' && (c.tasks || []).length === 0 && c.available ? '<p class="muted">No transcoder tasks running.</p>' : ''}`;
+      }
+
+      root.querySelector('#recheck').addEventListener('click', () => { VF.refreshHealth(); VF.refreshOverview(); });
+      render();
+      const unsub = store.subscribe((t) => { if (t.has('health') || t.has('overview') || t.has('videos')) render(); });
       return unsub;
     },
   };
@@ -450,7 +691,7 @@
   VF.views.watch = {
     dark: true,
     nav: 'videos',
-    title: (route) => (store.videos[route.param] ? store.videos[route.param].originalName : 'Watch'),
+    title: (route) => (store.videos[route.param] ? titleOf(store.videos[route.param]) : 'Preview'),
     mount(root, route) {
       const id = route.param;
       let video = store.videos[id] || null;
@@ -461,13 +702,13 @@
 
       function message({ iconName, title, text, progress, error }) {
         root.innerHTML = `
-          <a class="back-link" href="#/videos">${icon('back', 16)} Back to My Videos</a>
+          <a class="back-link" href="#/videos">${icon('back', 16)} Back to Videos</a>
           <div class="waiting-card ${error ? 'is-error' : ''}" role="status">
             <div class="wait-ico">${icon(iconName, 36)}</div>
             <h2>${esc(title)}</h2><p>${esc(text)}</p>
             ${progress ? `<div class="prog-labels"><span>${esc(progress.label)}</span>${progress.pct != null ? `<span>${progress.pct}%</span>` : ''}</div>
               <div class="progress ${progress.pct == null ? 'indeterminate' : ''}"><div class="progress-bar" style="width:${progress.pct == null ? 35 : progress.pct}%"></div></div>` : ''}
-            <a class="btn btn-ghost mt" href="#/videos">Back to My Videos</a>
+            <a class="btn btn-ghost mt" href="#/videos">Back to Videos</a>
           </div>`;
       }
 
@@ -478,7 +719,7 @@
           else root.innerHTML = '<div class="spinner" role="status" aria-label="Loading video"></div>';
           return;
         }
-        document.title = `${video.originalName} — VideoStream`;
+        document.title = `${titleOf(video)} — VideoStream Admin`;
         if (video.status === 'COMPLETED' && video.hlsPlaylistUrl) {
           built = true;
           teardownPlayer = buildPlayer(root, video);
@@ -521,7 +762,7 @@
     };
 
     root.innerHTML = `
-      <a class="back-link" href="#/videos">${icon('back', 16)} Back to My Videos</a>
+      <a class="back-link" href="#/videos">${icon('back', 16)} Back to Videos</a>
       <div class="watch-grid">
         <section aria-label="Video player">
           <div class="video-wrap">
@@ -537,12 +778,19 @@
             </div>
           </div>
 
-          <div class="watch-title"><h1>${esc(video.originalName)}</h1>${pill(video.status)}</div>
+          <div class="watch-title"><h1>${esc(titleOf(video))}</h1>${pill(video.status)}</div>
           <div class="meta-row">
             <span>${icon('clock', 15)} ${esc(durationOf(video))}</span>
             <span>${icon('hdd', 15)} ${esc(formatBytes(video.fileSize))}</span>
             <span>${icon('layers', 15)} ${esc(qualityOf(video))}</span>
             <span>Uploaded ${esc(timeAgo(video.createdAt))}</span>
+          </div>
+
+          <div class="admin-bar">
+            <span class="admin-bar-label">Admin preview</span>
+            <span id="vis-pill">${visibilityPill(video)}</span>
+            <button class="btn btn-ghost btn-sm" id="pub-btn">${video.published ? 'Unpublish' : 'Publish to public site'}</button>
+            <button class="btn btn-ghost btn-sm" id="edit-btn">Edit settings</button>
           </div>
 
           <div class="controls-bar">
@@ -562,7 +810,7 @@
         <aside class="watch-side">
           <section class="card panel"><h2 class="card-title">Video Quality</h2><ul class="quality-list" id="quality-list"></ul></section>
           <section class="card panel"><h2 class="card-title">Share</h2>
-            <div class="share"><input class="input" id="share-url" readonly value="${esc(video.hlsPlaylistUrl)}" aria-label="Stream URL" />
+            <div class="share"><input class="input" id="share-url" readonly value="${esc(new URL(video.hlsPlaylistUrl, location.origin).href)}" aria-label="Stream URL" />
               <button class="icon-btn solid" id="copy-url" aria-label="Copy stream URL">${icon('copy', 16)}</button></div>
             <p class="opt-note">HLS playlist (.m3u8). Opens in any HLS-compatible player.</p></section>
           <section class="card panel"><h2 class="card-title">Keyboard Shortcuts</h2>
@@ -658,7 +906,19 @@
       renderTab();
     });
 
-    $('#copy-url').addEventListener('click', () => copyText(video.hlsPlaylistUrl, 'Stream URL copied'));
+    const absoluteUrl = new URL(video.hlsPlaylistUrl, location.origin).href;
+    $('#copy-url').addEventListener('click', () => copyText(absoluteUrl, 'Stream URL copied'));
+
+    // Publish / unpublish right from the preview
+    let published = !!video.published;
+    $('#pub-btn').addEventListener('click', async () => {
+      if (await setPublished(video.id, !published)) {
+        published = !published;
+        $('#vis-pill').innerHTML = visibilityPill({ status: 'COMPLETED', published });
+        $('#pub-btn').textContent = published ? 'Unpublish' : 'Publish to public site';
+      }
+    });
+    $('#edit-btn').addEventListener('click', () => openEditDialog(video.id));
     $('#share-url').addEventListener('focus', (e) => e.target.select());
 
     // ── Overlays ──

@@ -1,5 +1,12 @@
 import { Response } from 'express';
 
+// Thrown by services so the error middleware can answer with the right HTTP status
+export class HttpError extends Error {
+  constructor(message: string, public status: number = 400, public code?: string) {
+    super(message);
+  }
+}
+
 export class ResponseHandler {
   static success(res: Response, data: any, statusCode: number = 200) {
     return res.status(statusCode).json({

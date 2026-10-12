@@ -6,6 +6,7 @@
 (function () {
   const VF = window.VF;
   const { esc, formatBytes, formatEta, toast, reconcile } = VF;
+  const QUALITIES = [360, 480, 720, 1080];
 
   const MIME_BY_EXT = { mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska' };
   const MAX_PARALLEL = 2;
@@ -51,7 +52,7 @@
   }
 
   function discardRecord(videoId) {
-    fetch(`/api/videos/${encodeURIComponent(videoId)}`, { method: 'DELETE' }).catch(() => {});
+    fetch(`/api/admin/videos/${encodeURIComponent(videoId)}`, { method: 'DELETE' }).catch(() => {});
   }
 
   async function run(item) {
@@ -59,8 +60,9 @@
     item.pct = 0;
     emit();
     try {
-      const { videoId, uploadUrl } = await post('/api/upload/initiate', {
+      const { videoId, uploadUrl } = await post('/api/admin/upload/initiate', {
         filename: item.file.name, contentType: item.type, fileSize: item.file.size,
+        qualities: item.options.qualities, autoPublish: item.options.autoPublish,
       });
       item.videoId = videoId;
       if (item.cancelled) throw new Error('cancelled');
@@ -70,7 +72,7 @@
       item.pct = 100;
       item.state = 'finalizing'; // too late to cancel once the file is up
       emit();
-      await post('/api/upload/complete', { videoId });
+      await post('/api/admin/upload/complete', { videoId });
 
       item.state = 'done';
       toast(`"${item.file.name}" uploaded. Processing has started.`, 'success');
@@ -111,12 +113,13 @@
           toast(`"${file.name}" is ${formatBytes(file.size)}. The limit is ${formatBytes(VF.config.maxUploadBytes)}.`, 'error');
           continue;
         }
-        uploads.items.push({ id: ++seq, file, type, state: 'staged', pct: 0, loaded: 0, speed: 0, eta: Infinity, error: '', videoId: null, xhr: null, cancelled: false });
+        uploads.items.push({ id: ++seq, file, type, state: 'staged', pct: 0, loaded: 0, speed: 0, eta: Infinity, error: '', videoId: null, xhr: null, cancelled: false, options: { qualities: QUALITIES, autoPublish: false } });
       }
       emit();
     },
-    startStaged() {
-      uploads.items.filter((i) => i.state === 'staged').forEach((i) => { i.state = 'queued'; });
+    // `options` are the processing settings chosen on the page at the moment Upload is pressed
+    startStaged(options) {
+      uploads.items.filter((i) => i.state === 'staged').forEach((i) => { i.state = 'queued'; i.options = options; });
       emit();
       pump();
     },
@@ -207,22 +210,22 @@
 
         <div class="card">
           <div class="card-head"><h2 class="card-title">Processing Options</h2>
-            <span class="chip" title="The server transcodes every video with the same pipeline">Set by the server pipeline</span></div>
+            <span class="chip" title="Applied to the videos in the upload list when you press Upload">Applies to this batch</span></div>
           <div class="opts">
             <fieldset class="opt">
               <legend>Output Qualities</legend>
-              ${['360p', '480p', '720p', '1080p'].map((q) => `<label class="check"><input type="checkbox" checked disabled /> ${q}</label>`).join('')}
-              <p class="opt-note">Each size up to your video's own resolution is generated automatically.</p>
+              ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" checked /> ${q}p</label>`).join('')}
+              <p class="opt-note" id="quality-note">Sizes larger than the source video are skipped automatically.</p>
             </fieldset>
+            <div class="opt">
+              <span class="opt-label">Publishing</span>
+              <label class="check"><input type="checkbox" id="auto-publish" /> Publish automatically when ready</label>
+              <p class="opt-note">Off by default: finished videos stay as drafts until you publish them from the Videos page.</p>
+            </div>
             <div class="opt">
               <label for="fmt">Output Format</label>
               <select id="fmt" class="select" disabled><option>HLS (m3u8)</option></select>
-              <p class="opt-note">Adaptive streaming, plays in any HLS player.</p>
-            </div>
-            <div class="opt">
-              <span class="opt-label">Thumbnail Generation</span>
-              <span class="switch on" role="img" aria-label="Enabled"></span>
-              <p class="opt-note">A poster image is created for every video.</p>
+              <p class="opt-note">Adaptive streaming with a poster thumbnail.</p>
             </div>
           </div>
           <div class="card-foot"><button class="btn btn-primary" id="start-btn" disabled>Upload &amp; Process</button></div>
@@ -247,7 +250,21 @@
       root.querySelector('#choose-btn').addEventListener('click', (e) => { e.stopPropagation(); input.click(); });
       dz.addEventListener('click', () => input.click());
       input.addEventListener('change', () => { uploads.stage(input.files); input.value = ''; });
-      startBtn.addEventListener('click', () => uploads.startStaged());
+      startBtn.addEventListener('click', () => {
+        const qualities = [...root.querySelectorAll('input[name="quality"]:checked')].map((el) => Number(el.value));
+        if (qualities.length === 0) {
+          const note = root.querySelector('#quality-note');
+          note.textContent = 'Choose at least one quality.';
+          note.classList.add('err-text');
+          return;
+        }
+        uploads.startStaged({ qualities, autoPublish: root.querySelector('#auto-publish').checked });
+      });
+      root.querySelector('.opts').addEventListener('change', () => {
+        const note = root.querySelector('#quality-note');
+        note.textContent = 'Sizes larger than the source video are skipped automatically.';
+        note.classList.remove('err-text');
+      });
       root.querySelector('#clear-done').addEventListener('click', () => uploads.clearFinished());
 
       ['dragenter', 'dragover'].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add('dragover'); }));

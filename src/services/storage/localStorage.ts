@@ -23,9 +23,10 @@ export class LocalStorage implements StorageService {
   }
 
   async getSignedUrl(bucket: string, key: string, operation: 'upload' | 'download'): Promise<string> {
-    const port = process.env.PORT || 5000;
+    // Relative by default so it works from whatever host the browser used; PUBLIC_BASE_URL overrides
+    const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
     const normalizedKey = key.replace(/\\/g, '/');
-    return `http://localhost:${port}/api/local-s3/${bucket}/${normalizedKey}?operation=${operation}`;
+    return `${base}/api/local-s3/${bucket}/${normalizedKey}?operation=${operation}`;
   }
 
   async uploadFile(bucket: string, key: string, filePath: string): Promise<void> {

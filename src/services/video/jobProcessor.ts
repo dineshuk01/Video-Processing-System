@@ -11,6 +11,10 @@ import {
 
 const MAX_RETRIES = 3;
 
+// A logging failure must never fail or mask the job itself
+const log = (videoId: string, level: 'info' | 'warn' | 'error', message: string) =>
+  dbService.appendEvent(videoId, level, message).catch((err) => Logger.warn('Could not write job log', err.message));
+
 export class JobProcessor {
   async processJob(receiptHandle: string, body: string, queueUrl: string): Promise<void> {
     let payload: any;
@@ -43,10 +47,13 @@ export class JobProcessor {
       // 1. Fetch video record
       const video = await dbService.getVideo(videoId);
       if (!video) {
-        throw new Error(`Video record ${videoId} not found in database`);
+        // The video was deleted while the job was queued: nothing to process, don't retry
+        Logger.warn(`Video record ${videoId} no longer exists. Dropping its queue message.`);
+        await getQueueService().deleteMessage(queueUrl, receiptHandle);
+        return;
       }
 
-      // 2. Idempotency check: allow retry if status is UPLOADED or FAILED (with remaining retries)
+      // 2. Idempotency check: a finished video's duplicate message is dropped
       if (video.status === VideoStatus.COMPLETED) {
         Logger.info(`Video ${videoId} is already COMPLETED. Deleting duplicate queue message.`);
         const queue = getQueueService();
@@ -68,6 +75,10 @@ export class JobProcessor {
       const outputKeyPrefix = `processed/${videoId}`;
 
       // 4. Dispatch to compute service
+      const attempts = (video.attempts || 0) + 1;
+      await dbService.updateVideo(videoId, { attempts });
+      await log(videoId, 'info',
+        `Attempt ${retryCount + 1} of ${MAX_RETRIES} started (${process.env.PROVIDER === 'aws' ? 'ECS Fargate task' : 'local FFmpeg process'})`);
       Logger.info(`Worker dispatching transcode job (attempt ${retryCount + 1})`, {
         inputBucket,
         inputKey,
@@ -91,6 +102,7 @@ export class JobProcessor {
       // 5. Delete processed message from Queue
       const queue = getQueueService();
       await queue.deleteMessage(queueUrl, receiptHandle);
+      await log(videoId, 'info', `Processing finished in ${duration.toFixed(1)}s`);
       Logger.info(`Worker successfully completed job for video: ${videoId} in ${duration.toFixed(1)}s`);
     } catch (err: any) {
       Logger.error(`Job processing failed for video ${videoId} (Attempt ${retryCount + 1}/${MAX_RETRIES})`, err.message);
@@ -112,11 +124,13 @@ export class JobProcessor {
         } catch (dbErr: any) {
           Logger.error('Failed to update video status in database', dbErr.message);
         }
+        await log(videoId, 'error', `Attempt ${currentRetry} failed: ${err.message}`);
+        await log(videoId, 'error', `Giving up after ${MAX_RETRIES} attempts. An admin can retry it from the Jobs page.`);
 
         // Delete from main queue to prevent infinite reprocessing
         await queue.deleteMessage(queueUrl, receiptHandle);
       } else {
-        // Re-enqueue with incremented retry count & exponential backoff delay (5s, 15s, 45s)
+        // Re-enqueue with incremented retry count & exponential backoff delay (15s, 45s)
         const backoffDelayMs = Math.pow(3, currentRetry) * 5000;
         Logger.warn(`Scheduling retry ${currentRetry}/${MAX_RETRIES} for video ${videoId} after ${backoffDelayMs / 1000}s backoff`);
 
@@ -126,20 +140,17 @@ export class JobProcessor {
             error: `Attempt ${currentRetry} failed: ${err.message}. Retrying...`,
           });
         } catch {}
+        await log(videoId, 'warn', `Attempt ${currentRetry} failed: ${err.message}`);
+        await log(videoId, 'warn', `Retry ${currentRetry + 1} scheduled in ${backoffDelayMs / 1000}s`);
 
-        // Delete old message and send updated payload with incremented retryCount
-        await queue.deleteMessage(queueUrl, receiptHandle);
-
-        setTimeout(async () => {
-          try {
-            await queue.sendMessage(queueUrl, {
-              ...payload,
-              retryCount: currentRetry,
-            });
-          } catch (requeueErr: any) {
-            Logger.error(`Failed to re-enqueue retry message for video ${videoId}`, requeueErr.message);
-          }
-        }, backoffDelayMs);
+        // The delay is handled by the queue, so a worker restart can't lose the retry
+        try {
+          await queue.sendMessage(queueUrl, { ...payload, retryCount: currentRetry }, backoffDelayMs / 1000);
+          await queue.deleteMessage(queueUrl, receiptHandle);
+        } catch (requeueErr: any) {
+          Logger.error(`Failed to re-enqueue retry message for video ${videoId}`, requeueErr.message);
+          // Keep the original message: it becomes visible again after the visibility timeout
+        }
       }
 
       throw err;
