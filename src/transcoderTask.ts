@@ -94,7 +94,12 @@ async function assertNotStopped() {
   if (await stopRequested()) throw new AbortedError('Stopped by an admin');
 }
 
-function runFfmpeg(args: string[]): Promise<void> {
+// Presets trade speed for file size at the same quality. 'veryfast' is a good default for streaming.
+const PRESETS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow'];
+const x264Preset = PRESETS.includes(process.env.FFMPEG_PRESET || '') ? process.env.FFMPEG_PRESET! : 'veryfast';
+
+// `onTime` receives how many seconds of the video have been encoded so far (needs `-progress pipe:1`)
+function runFfmpeg(args: string[], onTime?: (seconds: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     Logger.info(`FFmpeg: Executing command -> ${ffmpegBin} ${args.join(' ')}`);
     const proc = spawn(ffmpegBin, args);
@@ -117,6 +122,20 @@ function runFfmpeg(args: string[]): Promise<void> {
     proc.stderr.on('data', (data) => {
       stderr += data.toString();
     });
+
+    // -progress prints "key=value" lines; out_time_us is the encoded position in microseconds
+    let outBuffer = '';
+    if (onTime) {
+      proc.stdout.on('data', (data) => {
+        outBuffer += data.toString();
+        const lines = outBuffer.split('\n');
+        outBuffer = lines.pop() || '';
+        for (const line of lines) {
+          const match = /^out_time_(?:us|ms)=(\d+)/.exec(line.trim());
+          if (match) onTime(Number(match[1]) / 1e6);
+        }
+      });
+    }
 
     proc.on('close', (code) => {
       clearInterval(watcher);
@@ -271,44 +290,67 @@ async function executeTranscoding() {
       Logger.info(`Transcoder Task: Watermark image found at ${watermarkPath}. Overlaying on video.`);
     }
 
-    // Step D: Transcode eligible HLS Resolutions
-    const progressPerVariant = 70 / eligibleVariants.length; // Distribute 10% → 80% across variants
-    let currentProgress = 10;
+    // Keep the source's aspect ratio (a 2.39:1 movie must not be stretched to 16:9). Height is
+    // fixed per rendition and the width follows, rounded to an even number as H.264 requires.
+    const aspect = metadata.width && metadata.height ? metadata.width / metadata.height : 16 / 9;
+    const widthOf = (v: HlsVariant) => Math.max(2, Math.round((aspect * v.height) / 2) * 2);
 
-    for (const variant of eligibleVariants) {
-      await assertNotStopped();
-      Logger.info(`Transcoder Task: Generating ${variant.label} HLS playlist...`);
-      const ffmpegArgs = ['-y', '-i', inputFilePath];
-      
-      if (hasWatermark) {
-        ffmpegArgs.push('-i', watermarkPath);
-        ffmpegArgs.push(
-          '-filter_complex',
-          `[1:v]scale=64:-1[watermark];[0:v]scale=${variant.width}:${variant.height}[video];[video][watermark]overlay=W-w-10:10`
-        );
-      } else {
-        ffmpegArgs.push('-vf', `scale=w=${variant.width}:h=${variant.height}`);
-      }
+    // Step D: Transcode every rendition in a single FFmpeg run. The source is decoded once and
+    // split into one scaled copy per rendition; decoding (especially HEVC) is a large share of the work.
+    const n = eligibleVariants.length;
+    const ffmpegArgs = ['-y', '-nostdin', '-i', inputFilePath];
+    if (hasWatermark) ffmpegArgs.push('-i', watermarkPath);
 
+    const names = (prefix: string) => eligibleVariants.map((_, i) => `[${prefix}${i}]`).join('');
+    let graph = `[0:v]split=${n}${names('v')}`;
+    if (hasWatermark) graph += `;[1:v]scale=64:-1,split=${n}${names('w')}`;
+    eligibleVariants.forEach((v, i) => {
+      graph += hasWatermark
+        ? `;[v${i}]scale=-2:${v.height}[s${i}];[s${i}][w${i}]overlay=W-w-10:10[o${i}]`
+        : `;[v${i}]scale=-2:${v.height}[o${i}]`;
+    });
+    ffmpegArgs.push('-filter_complex', graph, '-progress', 'pipe:1', '-nostats');
+
+    eligibleVariants.forEach((v, i) => {
       ffmpegArgs.push(
+        '-map', `[o${i}]`, '-map', '0:a:0?',
         '-c:v', 'libx264',
-        '-b:v', variant.videoBitrate,
+        '-preset', x264Preset,
+        '-pix_fmt', 'yuv420p', // 8-bit: browsers cannot play 10-bit H.264 ("High 10"), which 10-bit sources produce by default
+        '-b:v', v.videoBitrate,
         '-c:a', 'aac',
-        '-b:a', variant.audioBitrate,
+        '-ac', '2',
+        '-b:a', v.audioBitrate,
         '-g', gopSize.toString(),
         '-keyint_min', gopSize.toString(),
         '-sc_threshold', '0',
         '-hls_time', '6',
         '-hls_playlist_type', 'vod',
-        '-hls_segment_filename', path.join(outputDir, `output_${variant.label}_%03d.ts`),
-        path.join(outputDir, `playlist_${variant.label}.m3u8`)
+        '-hls_segment_filename', path.join(outputDir, `output_${v.label}_%03d.ts`),
+        path.join(outputDir, `playlist_${v.label}.m3u8`)
       );
+    });
 
-      await runFfmpeg(ffmpegArgs);
-      await log('info', `Encoded ${variant.label}`);
-      currentProgress += progressPerVariant;
-      await dbService.updateVideo(videoId, { progress: Math.round(currentProgress) });
-    }
+    // Progress follows the encoded position, so long videos visibly advance (10% -> 80%)
+    let lastProgressWrite = 0;
+    let lastProgress = 10;
+    let writingProgress = false;
+    const onTime = (seconds: number) => {
+      if (!metadata.duration || writingProgress || Date.now() - lastProgressWrite < 3000) return;
+      const pct = Math.min(80, Math.round(10 + 70 * Math.min(1, seconds / metadata.duration)));
+      if (pct === lastProgress) return;
+      writingProgress = true;
+      lastProgressWrite = Date.now();
+      lastProgress = pct;
+      dbService.updateVideo(videoId, { progress: pct })
+        .catch(() => { /* a missed progress tick is harmless */ })
+        .finally(() => { writingProgress = false; });
+    };
+
+    Logger.info(`Transcoder Task: Encoding ${n} rendition(s) in one pass (preset ${x264Preset})...`);
+    await runFfmpeg(ffmpegArgs, onTime);
+    await log('info', `Encoded ${eligibleVariants.map((v) => v.label).join(', ')} (preset ${x264Preset})`);
+    await dbService.updateVideo(videoId, { progress: 80 });
 
     await assertNotStopped();
 
@@ -371,7 +413,7 @@ Enjoy smooth resolution switching and clear captions!
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
     
     for (const variant of eligibleVariants) {
-      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height}\n`;
+      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${widthOf(variant)}x${variant.height}\n`;
       masterPlaylistContent += `playlist_${variant.label}.m3u8\n`;
     }
 

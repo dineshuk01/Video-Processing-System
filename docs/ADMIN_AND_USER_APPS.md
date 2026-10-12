@@ -58,6 +58,10 @@ Choose renditions (360p/480p/720p/1080p) on upload, or edit them later and use *
 
 Failed jobs retry automatically up to 3 times (after 15 s, then 45 s, using a queue delay, so a worker restart can't lose a retry). After that the video is `FAILED`; use *Retry* on the Jobs page. Every step is written to the video's processing log (Jobs → Log, or the global Logs page).
 
+## How videos are encoded
+
+All renditions are produced by a single FFmpeg run, so the source is decoded once instead of once per rendition. Encoding uses the `veryfast` x264 preset (change it with `FFMPEG_PRESET`) and always outputs 8-bit video: browsers cannot play the 10-bit H.264 ("High 10") that 10-bit sources would otherwise produce. Each rendition keeps the source's aspect ratio (only the height is fixed), and audio is mixed down to stereo. The progress bar follows FFmpeg's real position in the video. Encoding time depends on the video's *duration* and your CPU, not its file size: a 3-hour movie takes hours on a laptop CPU.
+
 ## Stopping, pausing and deleting
 
 Every video row in the admin *Videos* and *Processing Jobs* pages has **Pause** (queued or processing videos) and **Delete** buttons, and the row menu has the rest.
