@@ -69,11 +69,13 @@ interface HlsVariant {
   bandwidth: number;
 }
 
+// videoBitrate is the peak a rendition may reach, not a target: the encoder aims for constant quality (CRF)
+// and only spends bits where the picture needs them, so detailed scenes keep their sharpness.
 const HLS_VARIANTS: HlsVariant[] = [
-  { label: '360p',  width: 640,  height: 360,  videoBitrate: '400k',  audioBitrate: '64k',  bandwidth: 400000 },
-  { label: '480p',  width: 854,  height: 480,  videoBitrate: '800k',  audioBitrate: '96k',  bandwidth: 800000 },
-  { label: '720p',  width: 1280, height: 720,  videoBitrate: '2500k', audioBitrate: '128k', bandwidth: 2500000 },
-  { label: '1080p', width: 1920, height: 1080, videoBitrate: '4500k', audioBitrate: '128k', bandwidth: 4500000 },
+  { label: '360p',  width: 640,  height: 360,  videoBitrate: '1200k',  audioBitrate: '96k',  bandwidth: 1200000 },
+  { label: '480p',  width: 854,  height: 480,  videoBitrate: '2500k',  audioBitrate: '128k', bandwidth: 2500000 },
+  { label: '720p',  width: 1280, height: 720,  videoBitrate: '6000k',  audioBitrate: '192k', bandwidth: 6000000 },
+  { label: '1080p', width: 1920, height: 1080, videoBitrate: '12000k', audioBitrate: '192k', bandwidth: 12000000 },
 ];
 
 // An admin paused or deleted the video: stop quietly instead of failing or retrying
@@ -96,6 +98,8 @@ async function assertNotStopped() {
 
 // Presets trade speed for file size at the same quality. 'veryfast' is a good default for streaming.
 const PRESETS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow'];
+// Lower CRF = higher quality (18 is visually near-lossless; 23 is x264's default). Override with FFMPEG_CRF.
+const crf = String(Math.min(30, Math.max(14, parseInt(process.env.FFMPEG_CRF || '', 10) || 17)));
 const x264Preset = PRESETS.includes(process.env.FFMPEG_PRESET || '') ? process.env.FFMPEG_PRESET! : 'veryfast';
 
 // `onTime` receives how many seconds of the video have been encoded so far (needs `-progress pipe:1`)
@@ -280,9 +284,14 @@ async function executeTranscoding() {
 
     // If the audio starts late, the HLS segments before it would have no audio at all, which browsers
     // cannot play ("bufferAppendError"). The encoder pads that stretch with silence instead (see -af below).
+    // Padding inside the main encode is not enough: the silence is produced late, in one burst, so the early
+    // segments still come out empty. Instead the audio is rebuilt first as its own gap-free track (fast, audio only).
     const audioStart = await probeAudioStart(inputFilePath);
+    let fixedAudioPath: string | null = null;
     if (audioStart !== null && audioStart > 0.5) {
       await log('warn', `The audio only starts ${audioStart.toFixed(1)} s into the video. Silence is added before it so the stream plays in every browser.`);
+      fixedAudioPath = path.join(tempDir, 'audio_padded.m4a');
+      await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-vn', '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-ac', '2', '-b:a', '192k', fixedAudioPath]);
     }
 
     // Step C: Decide which renditions to make.
@@ -338,6 +347,8 @@ async function executeTranscoding() {
     const n = eligibleVariants.length;
     const ffmpegArgs = ['-y', '-nostdin', '-i', inputFilePath];
     if (hasWatermark) ffmpegArgs.push('-i', watermarkPath);
+    if (fixedAudioPath) ffmpegArgs.push('-i', fixedAudioPath);
+    const audioMap = fixedAudioPath ? `${hasWatermark ? 2 : 1}:a:0` : '0:a:0?';
 
     // Lanczos keeps upscaled frames as sharp as scaling can make them
     const scaleFilter = (v: HlsVariant) => {
@@ -356,12 +367,13 @@ async function executeTranscoding() {
 
     eligibleVariants.forEach((v, i) => {
       ffmpegArgs.push(
-        '-map', `[o${i}]`, '-map', '0:a:0?',
+        '-map', `[o${i}]`, '-map', audioMap,
         '-c:v', 'libx264',
         '-preset', x264Preset,
         '-pix_fmt', 'yuv420p', // 8-bit: browsers cannot play 10-bit H.264 ("High 10"), which 10-bit sources produce by default
-        '-b:v', v.videoBitrate,
-        '-af', 'aresample=async=1:first_pts=0', // silence from 0 s up to where the audio really starts
+        '-crf', crf,
+        '-maxrate', v.videoBitrate,
+        '-bufsize', `${parseInt(v.videoBitrate, 10) * 2}k`,
         '-c:a', 'aac',
         '-ac', '2',
         '-b:a', v.audioBitrate,
