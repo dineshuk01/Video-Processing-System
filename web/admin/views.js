@@ -179,6 +179,7 @@
     }
     if (canPause(video)) items.push({ label: 'Pause processing', icon: 'pause', onClick: () => pauseVideo(video.id) });
     if (canRetry(video)) items.push({ label: retryLabel(video), icon: 'refresh', onClick: () => retryVideo(video.id) });
+    items.push({ label: 'Rename', icon: 'edit', onClick: () => openEditDialog(video.id, { focusTitle: true }) });
     items.push({ label: 'Edit settings', icon: 'settings', onClick: () => openEditDialog(video.id) });
     if (canDeleteProcessed(video)) items.push({ label: 'Delete processed files', icon: 'trash', danger: true, onClick: () => deleteProcessedFiles(video.id) });
     items.push({ label: ['PROCESSING', 'UPLOADED'].includes(video.status) ? 'Stop & delete' : 'Delete video', icon: 'trash', danger: true, onClick: () => deleteVideo(video.id) });
@@ -225,7 +226,7 @@
   const kv = (label, value) => `<div class="kv"><span>${esc(label)}</span><span>${value}</span></div>`;
 
   // ─── Edit settings dialog ──────────────────────────────────
-  function openEditDialog(id) {
+  function openEditDialog(id, { focusTitle = false } = {}) {
     const v = store.videos[id];
     if (!v) return;
     const selected = v.qualities && v.qualities.length ? v.qualities : QUALITIES;
@@ -250,6 +251,7 @@
     });
     const form = modal.el.querySelector('#edit-form');
     const errBox = modal.el.querySelector('#edit-error');
+    if (focusTitle) { form.title.focus(); form.title.select(); }
     const read = () => ({
       title: form.title.value.trim(),
       qualities: [...form.querySelectorAll('input[name="quality"]:checked')].map((el) => Number(el.value)),
@@ -264,6 +266,7 @@
         store.videos = { ...store.videos, [id]: { ...store.videos[id], ...updated } };
         store.emit('videos');
         if (reprocess) await retryVideo(id, values.qualities);
+        else if (values.title !== (v.title || '')) toast('Renamed. The new title shows on the public site within a few seconds.', 'success', 3500);
         else toast('Settings saved', 'success', 2200);
         modal.close();
       } catch (err) {
@@ -857,7 +860,7 @@
             </div>
           </div>
 
-          <div class="watch-title"><h1>${esc(titleOf(video))}</h1>${pill(video.status)}</div>
+          <div class="watch-title"><h1 id="watch-h1">${esc(titleOf(video))}</h1>${pill(video.status)}</div>
           <div class="meta-row">
             <span>${icon('clock', 15)} ${esc(durationOf(video))}</span>
             <span>${icon('hdd', 15)} ${esc(formatBytes(video.fileSize))}</span>
@@ -869,7 +872,7 @@
             <span class="admin-bar-label">Admin preview</span>
             <span id="vis-pill">${visibilityPill(video)}</span>
             <button class="btn btn-ghost btn-sm" id="pub-btn">${video.published ? 'Unpublish' : 'Publish to public site'}</button>
-            <button class="btn btn-ghost btn-sm" id="edit-btn">Edit settings</button>
+            <button class="btn btn-ghost btn-sm" id="edit-btn">Rename &amp; settings</button>
           </div>
 
           <div class="controls-bar">
@@ -997,7 +1000,15 @@
         $('#pub-btn').textContent = published ? 'Unpublish' : 'Publish to public site';
       }
     });
-    $('#edit-btn').addEventListener('click', () => openEditDialog(video.id));
+    $('#edit-btn').addEventListener('click', () => openEditDialog(video.id, { focusTitle: true }));
+
+    // A rename made in the dialog shows in the preview straight away
+    const unsubTitle = store.subscribe((t) => {
+      const latest = t.has('videos') && store.videos[video.id];
+      if (!latest) return;
+      $('#watch-h1').textContent = titleOf(latest);
+      document.title = `${titleOf(latest)} — VideoStream Admin`;
+    });
     $('#share-url').addEventListener('focus', (e) => e.target.select());
 
     // ── Overlays ──
@@ -1122,6 +1133,7 @@
     startPlayback(0);
 
     return () => {
+      unsubTitle();
       document.removeEventListener('keydown', onKey);
       if (hls) hls.destroy();
       videoEl.pause();

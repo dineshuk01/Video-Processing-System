@@ -91,7 +91,8 @@
   // ─── Data ──────────────────────────────────────────────────
   async function load() {
     try {
-      const res = await fetch('/api/public/videos');
+      // 'no-cache' = always ask the server whether the list changed (cheap 304 if not), so a rename shows at once
+      const res = await fetch('/api/public/videos', { cache: 'no-cache' });
       const json = await res.json();
       if (!json.success) throw new Error(json.error?.message || 'Could not load videos');
       const next = {};
@@ -112,6 +113,8 @@
   // Newly published (or removed) videos show up without a reload
   function startPolling() {
     setInterval(() => { if (!document.hidden) load(); }, 30000);
+    // Coming back to the tab refreshes straight away, so renames and new videos show up promptly
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
   }
 
   // ─── Router ────────────────────────────────────────────────
@@ -408,7 +411,7 @@
       if (!video) {
         // It may be newer than our list, so ask the server once
         try {
-          const res = await fetch(`/api/public/videos/${encodeURIComponent(id)}`);
+          const res = await fetch(`/api/public/videos/${encodeURIComponent(id)}`, { cache: 'no-cache' });
           const json = await res.json();
           if (json.success) { video = json.data; state.videos[id] = video; }
         } catch { /* fall through to not found */ }
@@ -646,6 +649,14 @@
       update() {
         if (!teardownPlayer && state.loaded && !destroyed) { video = state.videos[id] || video; resolve(); return; }
         renderMore();
+        // Keep the title in step if an admin renamed the video while it is open
+        const latest = state.videos[id];
+        if (latest && latest.title !== video.title) {
+          video = latest;
+          const heading = app.querySelector('.w-title');
+          if (heading) heading.textContent = titleOf(latest);
+          document.title = `${titleOf(latest)} — VideoStream`;
+        }
         const btn = document.getElementById('list-btn');
         if (btn) {
           btn.setAttribute('aria-pressed', String(inList(id)));

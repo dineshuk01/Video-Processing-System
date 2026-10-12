@@ -64,6 +64,7 @@
     eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5"/>',
     activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
     pause: '<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>',
     refresh: '<path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7"/>',
     hdd: '<rect x="3" y="14" width="18" height="6" rx="2"/><path d="M3 14l3-9h12l3 9M7 17h0"/>',
