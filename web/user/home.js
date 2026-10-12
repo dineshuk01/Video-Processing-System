@@ -203,6 +203,7 @@
       case 'watch': setNav(''); currentView = watchView(route.param); break;
       case 'search': setNav(''); currentView = gridView(`Results for “${route.q}”`, 'search', route.q); break;
       case 'browse': setNav(route.param); currentView = gridView(FILTERS[route.param] ? FILTERS[route.param].title : 'Browse', route.param); break;
+      case 'movies': setNav('movies'); currentView = gridView('Movies', 'movies'); break;
       case 'mylist': setNav('mylist'); currentView = gridView('My List', 'mylist'); break;
       case 'history': setNav('history'); currentView = gridView('Watch history', 'history'); break;
       case 'series': setNav('series'); currentView = route.param ? seriesView(route.param) : gridView('TV Series', 'series'); break;
@@ -352,10 +353,11 @@
       </div>`;
   }
 
-  function rowHtml(title, tiles) {
+  function rowHtml(title, tiles, href = '') {
     return `
       <section class="row" aria-label="${esc(title)}">
-        <h2 class="row-title">${esc(title)}</h2>
+        <p class="row-label"><span>${title === 'Continue Watching' || title === 'My List' ? 'Yours' : 'Browse'}</span></p>
+        <h2 class="row-title">${esc(title)}${href ? ` <a class="row-all" href="${href}">All</a>` : ''}</h2>
         <div class="row-wrap">
           <button class="row-arrow left hide" aria-label="Scroll left">${svg('left', 28)}</button>
           <div class="row-scroll">${tiles}</div>
@@ -460,62 +462,75 @@
     app.querySelectorAll('.row').forEach((r) => { scrolled[r.getAttribute('aria-label')] = r.querySelector('.row-scroll').scrollLeft; });
 
     // The banner features whichever is newest: a movie or a series (a new episode bumps its series)
-    const newestMovie = all[0];
-    const newestSeries = seriesAll[0];
-    const featuredIsSeries = !!newestSeries && (!newestMovie || new Date(newestSeries.publishedAt) > new Date(newestMovie.publishedAt));
 
     const listed = readList().map((id) => (id.startsWith('series:') ? state.series.find((x) => `series:${x.id}` === id) : state.videos[id])).filter(Boolean);
     const resume = continueWatching();
     const rows = [
       resume.length ? rowHtml('Continue Watching', resume.map(({ v, pos, upNext }) => (v.seriesId ? episodeTileHtml(v, pos, upNext) : tileHtml(v, pos))).join('')) : '',
-      seriesAll.length ? rowHtml('TV Series', seriesAll.map(seriesTileHtml).join('')) : '',
-      all.length ? rowHtml('Latest videos', all.map((v) => tileHtml(v)).join('')) : '',
-      listed.length ? rowHtml('My List', listed.map((v) => (v.seasons ? seriesTileHtml(v) : tileHtml(v))).join('')) : '',
-      ...Object.keys(FILTERS).map((key) => {
-        const items = all.filter(FILTERS[key].test);
-        return items.length ? rowHtml(FILTERS[key].title, items.map((v) => tileHtml(v)).join('')) : '';
-      }),
+      seriesAll.length ? rowHtml('TV Series', seriesAll.map(seriesTileHtml).join(''), '#/series') : '',
+      all.length ? rowHtml('Movies', all.map((v) => tileHtml(v)).join(''), '#/movies') : '',
+      listed.length ? rowHtml('My List', listed.map((v) => (v.seasons ? seriesTileHtml(v) : tileHtml(v))).join(''), '#/mylist') : '',
     ].join('');
 
-    let banner;
-    if (featuredIsSeries) {
-      const t = playTarget(newestSeries);
-      banner = `
-        <section class="billboard" aria-label="Featured series">
-          ${newestSeries.posterUrl ? `<img class="bb-img" src="${esc(newestSeries.posterUrl)}" alt="" />` : ''}
+    // Rotating banner: the newest few movies and series, newest first
+    const featured = [
+      ...seriesAll.map((x) => ({ kind: 'series', item: x, at: new Date(x.publishedAt) })),
+      ...all.map((x) => ({ kind: 'movie', item: x, at: new Date(x.publishedAt) })),
+    ].sort((p, q) => q.at - p.at).slice(0, 5);
+    const slideHtml = ({ kind, item }, i) => {
+      if (kind === 'series') {
+        const t = playTarget(item);
+        return `
+        <section class="billboard slide${i === 0 ? ' on' : ''}" aria-label="Featured series">
+          ${item.posterUrl ? `<img class="bb-img" src="${esc(item.posterUrl)}" alt="" />` : ''}
           <div class="bb-shade"></div>
           <div class="bb-body">
-            <span class="bb-tag">Series</span>
-            <h1>${esc(newestSeries.title)}</h1>
-            <p class="bb-meta">${esc(seriesLine(newestSeries))}</p>
-            ${newestSeries.description ? `<p class="bb-desc">${esc(newestSeries.description)}</p>` : ''}
+            <p class="bb-info"><span class="chip">Series</span><span>${esc(seriesLine(item))}</span></p>
+            <h1>${esc(item.title)}</h1>
+            ${item.description ? `<p class="bb-desc">${esc(item.description)}</p>` : ''}
             <div class="bb-actions">
-              <a class="btn btn-light btn-lg" href="${watchHref(t.ep)}">${svg('play', 22)} ${esc(t.label)}</a>
-              <a class="btn btn-gray btn-lg" href="${seriesHref(newestSeries)}">${svg('info', 22)} Episodes</a>
+              <a class="btn btn-light btn-lg" href="${watchHref(t.ep)}">${svg('play', 20)} ${esc(t.label)}</a>
+              <a class="btn btn-gray btn-lg" href="${seriesHref(item)}">${svg('info', 20)} Episodes</a>
             </div>
           </div>
         </section>`;
-    } else {
-      banner = `
-        <section class="billboard" aria-label="Featured video">
-          ${newestMovie.thumbnailUrl ? `<img class="bb-img" src="${esc(newestMovie.thumbnailUrl)}" alt="" />` : ''}
+      }
+      return `
+        <section class="billboard slide${i === 0 ? ' on' : ''}" aria-label="Featured video">
+          ${item.thumbnailUrl ? `<img class="bb-img" src="${esc(item.thumbnailUrl)}" alt="" />` : ''}
           <div class="bb-shade"></div>
           <div class="bb-body">
-            <span class="bb-tag">${ageMs(newestMovie) < 864e5 ? 'New' : 'Latest'}</span>
-            <h1>${esc(titleOf(newestMovie))}</h1>
-            <p class="bb-meta">${metaLine(newestMovie)}</p>
+            <p class="bb-info"><span class="chip">${ageMs(item) < 864e5 ? 'New' : 'Movie'}</span><span>${metaLine(item)}</span></p>
+            <h1>${esc(titleOf(item))}</h1>
             <div class="bb-actions">
-              <a class="btn btn-light btn-lg" href="${watchHref(newestMovie)}">${svg('play', 22)} Play</a>
-              <button class="btn btn-gray btn-lg" data-act="info" data-id="${esc(newestMovie.id)}">${svg('info', 22)} More info</button>
+              <a class="btn btn-light btn-lg" href="${watchHref(item)}">${svg('play', 20)} Play</a>
+              <button class="btn btn-gray btn-lg" data-act="info" data-id="${esc(item.id)}">${svg('info', 20)} More Info</button>
             </div>
           </div>
         </section>`;
-    }
+    };
+    const banner = `<div class="hero" id="hero">${featured.map(slideHtml).join('')}${featured.length > 1 ? `<div class="dots" role="tablist" aria-label="Featured">${featured.map((_, i) => `<button class="${i === 0 ? 'on' : ''}" data-slide="${i}" aria-label="Show featured ${i + 1}"></button>`).join('')}</div>` : ''}</div>`;
 
     app.innerHTML = `${banner}<div class="rows">${rows}</div>`;
     app.querySelectorAll('.row').forEach((r) => { r.querySelector('.row-scroll').scrollLeft = scrolled[r.getAttribute('aria-label')] || 0; });
     wireRows(app);
+    wireHero();
     return {};
+  }
+
+  let heroTimer = null;
+  function wireHero() {
+    clearInterval(heroTimer);
+    const hero = document.getElementById('hero');
+    if (!hero) return;
+    const slides = [...hero.querySelectorAll('.slide')];
+    const dots = [...hero.querySelectorAll('.dots button')];
+    if (slides.length < 2) return;
+    let at = 0;
+    const show = (i) => { at = (i + slides.length) % slides.length; slides.forEach((el, k) => el.classList.toggle('on', k === at)); dots.forEach((el, k) => el.classList.toggle('on', k === at)); };
+    dots.forEach((d) => d.addEventListener('click', () => { show(+d.dataset.slide); restart(); }));
+    const restart = () => { clearInterval(heroTimer); heroTimer = setInterval(() => { if (!hero.isConnected) return clearInterval(heroTimer); if (!document.hidden) show(at + 1); }, 8000); };
+    restart();
   }
 
   // ═════════════════════════════════════════════════════════
@@ -550,6 +565,8 @@
         ? notice('film', 'No watch history yet', 'Videos you watch will appear here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
       : kind === 'series'
         ? notice('film', 'No series yet', 'Series will appear here as soon as they are published.', '<a class="btn btn-light" href="#/">Back to home</a>')
+      : kind === 'movies'
+        ? notice('film', 'No movies yet', 'Movies will appear here as soon as they are published.', '<a class="btn btn-light" href="#/">Back to home</a>')
       : kind === 'search'
         ? notice('film', 'Nothing found', `Nothing matches “${q}”.`, '<a class="btn btn-light" href="#/">Back to home</a>')
         : notice('film', 'Nothing here yet', 'No videos match this category right now.', '<a class="btn btn-light" href="#/">Back to home</a>');

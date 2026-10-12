@@ -9,7 +9,7 @@
   <meta name="description" content="Watch the latest videos on VideoStream." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Bebas+Neue&display=swap" />
   <link rel="stylesheet" href="home.css" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5' fill='%23e50914'/><path d='M9 7l8 5-8 5z' fill='white'/></svg>" />
   <!-- Hls.js (pinned version) -->
@@ -19,17 +19,12 @@
   <a class="skip-link" href="#app">Skip to content</a>
 
   <header class="hdr" id="hdr">
-    <a class="logo" href="#/" aria-label="VideoStream home">VIDEOSTREAM</a>
+    <a class="logo" href="#/" aria-label="VideoStream home">VIDEO<b>STREAM</b></a>
 
     <nav class="nav" id="nav" aria-label="Browse">
       <a href="#/" data-nav="home">Home</a>
+      <a href="#/movies" data-nav="movies">Movies</a>
       <a href="#/series" data-nav="series">Series</a>
-      <a href="#/browse/new" data-nav="new">New</a>
-      <a href="#/browse/hd" data-nav="hd">HD</a>
-      <a href="#/browse/short" data-nav="short">Quick watches</a>
-      <a href="#/browse/long" data-nav="long">Long watches</a>
-      <a href="#/mylist" data-nav="mylist">My List</a>
-      <a href="#/history" data-nav="history">History</a>
     </nav>
 
     <div class="hdr-right">
@@ -41,7 +36,7 @@
         <input id="q" type="search" placeholder="Titles" autocomplete="off" />
       </form>
       <!-- Login system goes here: render the signed-in user / "Sign in" button into #auth-slot -->
-      <div id="auth-slot"></div>
+      <div id="auth-slot"><a class="avatar" href="#/history" aria-label="Watch history"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.5 3.2-6 7-6s7 2.5 7 6"/></svg></a></div>
     </div>
   </header>
 
