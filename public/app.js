@@ -10,8 +10,9 @@
   // There is no auth in the backend, so the greeting name is a plain setting.
   VF.config = {
     userName: 'Dinesh',
-    maxUploadBytes: 1000 * 1024 * 1024, // mirrors MAX_UPLOAD_SIZE_MB=1000
-    maxUploadLabel: '1 GB',
+    // Defaults only: replaced at startup by the server's MAX_UPLOAD_SIZE_MB (see loadServerConfig)
+    maxUploadBytes: 1000 * 1024 * 1024,
+    maxUploadLabel: '1000 MB',
     pageSize: 10,
   };
   try {
@@ -286,6 +287,21 @@
     window.scrollTo(0, 0);
   }
 
+  // ─── Server settings ───────────────────────────────────────
+  const formatLimit = (mb) => (mb >= 1024 ? `${+(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
+
+  async function loadServerConfig() {
+    try {
+      const res = await fetch('/api/config', { signal: AbortSignal.timeout(2000) });
+      const json = await res.json();
+      const mb = json.success && json.data.maxUploadMb;
+      if (mb > 0) {
+        VF.config.maxUploadBytes = mb * 1024 * 1024;
+        VF.config.maxUploadLabel = formatLimit(mb);
+      }
+    } catch { /* keep the defaults; the server still enforces its own limit */ }
+  }
+
   // ─── Boot ──────────────────────────────────────────────────
   function renderBadges() {
     const jobs = store.activeCount();
@@ -302,7 +318,7 @@
     if (jobs > 0) document.title = `(${jobs}) ${document.title}`;
   }
 
-  VF.start = function start() {
+  VF.start = async function start() {
     document.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = VF.icon(el.dataset.icon, 18); });
     document.getElementById('user-name').textContent = VF.config.userName;
     document.getElementById('avatar').textContent = VF.config.userName.charAt(0).toUpperCase();
@@ -336,6 +352,7 @@
     renderConnection();
     renderBell();
     initSSE();
+    await loadServerConfig(); // before the first page renders, so the upload page shows the real limit
     VF.refreshHealth();
     setInterval(VF.refreshHealth, 30000);
     setInterval(() => { if (!bellPop.classList.contains('hidden')) renderBell(); }, 30000);

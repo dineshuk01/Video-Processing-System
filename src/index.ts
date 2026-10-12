@@ -103,6 +103,19 @@ app.get('/health', (req: express.Request, res: express.Response) => {
   });
 });
 
+// Public client settings, so the UI shows the same upload limit the server enforces
+app.get('/api/config', (req: express.Request, res: express.Response) => {
+  return res.status(200).json({
+    success: true,
+    data: {
+      maxUploadMb: parseInt(process.env.MAX_UPLOAD_SIZE_MB || '1000', 10),
+      allowedMimeTypes: (process.env.ALLOWED_MIME_TYPES || 'video/mp4,video/quicktime,video/x-matroska')
+        .split(',')
+        .map((m) => m.trim()),
+    },
+  });
+});
+
 // Detailed Health Check Endpoint (Verifies DB, Storage, Queue connectivity)
 app.get('/health/detailed', async (req: express.Request, res: express.Response) => {
   const status: Record<string, string> = {
