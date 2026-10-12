@@ -63,6 +63,7 @@
       const { videoId, uploadUrl } = await post('/api/admin/upload/initiate', {
         filename: item.file.name, contentType: item.type, fileSize: item.file.size,
         qualities: item.options.qualities, autoPublish: item.options.autoPublish, allowUpscale: item.options.allowUpscale,
+        seriesId: item.options.seriesId, seasonNumber: item.options.seasonNumber, episodeNumber: item.options.episodeNumber,
       });
       item.videoId = videoId;
       if (item.cancelled) throw new Error('cancelled');
@@ -119,7 +120,12 @@
     },
     // `options` are the processing settings chosen on the page at the moment Upload is pressed
     startStaged(options) {
-      uploads.items.filter((i) => i.state === 'staged').forEach((i) => { i.state = 'queued'; i.options = options; });
+      // Episodes are numbered in the order of the upload list, starting at options.firstEpisode
+      let n = options.firstEpisode || 1;
+      uploads.items.filter((i) => i.state === 'staged').forEach((i) => {
+        i.state = 'queued';
+        i.options = options.seriesId ? { ...options, episodeNumber: n++ } : options;
+      });
       emit();
       pump();
     },
@@ -184,7 +190,7 @@
 
   VF.views.upload = {
     title: () => 'Upload Video',
-    mount(root) {
+    mount(root, route) {
       root.innerHTML = `
         <div class="page-head">
           <h1>Upload Video</h1>
@@ -221,6 +227,13 @@
             <div class="opt">
               <span class="opt-label">Publishing</span>
               <label class="check"><input type="checkbox" id="auto-publish" /> Publish automatically when ready</label>
+              <label for="up-series" class="opt-label-sm">Add to a series</label>
+              <select id="up-series" class="select"><option value="">Not part of a series</option></select>
+              <div class="series-slot hidden" id="up-series-slot">
+                <label for="up-season">Season</label><input type="number" id="up-season" class="input" min="0" max="99" value="1" />
+                <label for="up-first">First episode number</label><input type="number" id="up-first" class="input" min="1" max="9999" value="1" />
+                <p class="opt-note">Files get consecutive numbers in the order of the list above. Rename episodes later from the series page.</p>
+              </div>
               <p class="opt-note">Off by default: finished videos stay as drafts until you publish them from the Videos page.</p>
             </div>
             <div class="opt">
@@ -259,7 +272,17 @@
           note.classList.add('err-text');
           return;
         }
-        uploads.startStaged({ qualities, autoPublish: root.querySelector('#auto-publish').checked, allowUpscale: root.querySelector('#allow-upscale').checked });
+        const seriesId = root.querySelector('#up-series').value;
+        const seasonNumber = Number(root.querySelector('#up-season').value);
+        const firstEpisode = Number(root.querySelector('#up-first').value);
+        if (seriesId && (!Number.isInteger(seasonNumber) || seasonNumber < 0 || !Number.isInteger(firstEpisode) || firstEpisode < 1)) {
+          toast('Enter a season (0 or more) and a first episode number (1 or more).', 'error');
+          return;
+        }
+        uploads.startStaged({
+          qualities, autoPublish: root.querySelector('#auto-publish').checked, allowUpscale: root.querySelector('#allow-upscale').checked,
+          ...(seriesId ? { seriesId, seasonNumber, firstEpisode } : {}),
+        });
       });
       root.querySelector('.opts').addEventListener('change', () => {
         const note = root.querySelector('#quality-note');
@@ -267,6 +290,26 @@
         note.classList.remove('err-text');
       });
       root.querySelector('#clear-done').addEventListener('click', () => uploads.clearFinished());
+
+      // Series selector: fill from the live list, preselect from the link (#/upload?series=ID&season=N)
+      const seriesSel = root.querySelector('#up-series');
+      const seasonIn = root.querySelector('#up-season');
+      const firstIn = root.querySelector('#up-first');
+      const nextEpisode = () => 1 + Math.max(0, ...Object.values(VF.store.videos)
+        .filter((v) => v.seriesId === seriesSel.value && v.seasonNumber === Number(seasonIn.value)).map((v) => v.episodeNumber || 0));
+      const syncSlot = () => {
+        root.querySelector('#up-series-slot').classList.toggle('hidden', !seriesSel.value);
+        if (seriesSel.value) firstIn.value = nextEpisode();
+      };
+      VF.store.series.forEach((s) => seriesSel.add(new Option(s.title, s.id)));
+      const wanted = route && route.query ? route.query.get('series') : null;
+      if (wanted && VF.store.series.some((s) => s.id === wanted)) {
+        seriesSel.value = wanted;
+        if (route.query.get('season') !== null) seasonIn.value = route.query.get('season');
+      }
+      seriesSel.addEventListener('change', syncSlot);
+      seasonIn.addEventListener('input', syncSlot);
+      syncSlot();
 
       ['dragenter', 'dragover'].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add('dragover'); }));
       ['dragleave', 'drop'].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.remove('dragover'); }));

@@ -459,3 +459,25 @@ tr.log-error td:last-child { color: var(--st-fail); }
 body.dark-page .pill-PAUSED { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
 td.right.nowrap .btn { vertical-align: middle; }
 .btn-sm svg { margin-right: 0.1rem; }
+
+/* ─── Series ───────────────────────────────────────────────── */
+.page-head-actions { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.series-chip { display: inline-block; padding: 0 0.45rem; margin-right: 0.3rem; border-radius: 5px; background: var(--primary-50); color: var(--primary); font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
+.series-head { display: flex; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; }
+.series-head h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.3rem; }
+.series-head-main { flex: 1 1 360px; min-width: 0; }
+.series-head-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; align-content: flex-start; }
+.series-visibility { display: flex; align-items: center; gap: 0.45rem; margin-right: 0.4rem; }
+.series-meta { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.7rem; font-size: 0.8rem; color: var(--text-2); }
+.series-meta span { padding: 0.1rem 0.6rem; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); }
+.muted-text { color: var(--text-2); }
+.pad-sm { padding: 0.4rem 0 0.8rem; }
+.head-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.season-card .ep-col { width: 3rem; text-align: center; }
+.alert-box.note { background: #fef3c7; color: #92400e; margin: 0 0 1.25rem; }
+.two-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+textarea.input { height: auto; padding: 0.6rem 0.75rem; resize: vertical; font: inherit; line-height: 1.4; }
+.series-slot { display: flex; flex-direction: column; gap: 0.4rem; width: 100%; padding: 0.6rem 0.7rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.series-slot label { font-size: 0.78rem; font-weight: 600; }
+.series-slot .input { width: 100%; }
+.opt-label-sm { margin-top: 0.7rem; font-size: 0.82rem; font-weight: 600; }

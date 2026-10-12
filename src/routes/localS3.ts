@@ -14,7 +14,7 @@ async function isPublishedVideo(id: string): Promise<boolean> {
   const cached = getPublishedCache(id);
   if (cached !== undefined) return cached;
   const video = await dbService.getVideo(id);
-  const ok = !!video && videoService.isPublic(video);
+  const ok = !!video && (await videoService.isVisible(video));
   setPublishedCache(id, ok);
   return ok;
 }

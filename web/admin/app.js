@@ -65,6 +65,7 @@
     layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5"/>',
     activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
+    tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>',
     pause: '<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>',
     refresh: '<path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7"/>',
     hdd: '<rect x="3" y="14" width="18" height="6" rx="2"/><path d="M3 14l3-9h12l3 9M7 17h0"/>',
@@ -78,6 +79,8 @@
     loaded: false,
     health: null,
     overview: null,
+    series: [],           // admin list of series (with counts); episodes live in `videos`
+    seriesLoaded: false,
     deleted: new Set(), // ids deleted here: a live update already in flight must not bring them back
     connection: 'connecting',
     notifications: [],
@@ -178,6 +181,15 @@
     } catch { /* the stream will retry */ }
   }
 
+  // Re-read the whole video list (used after bulk changes such as deleting a series)
+  VF.reloadVideos = async function reloadVideos() {
+    try {
+      const res = await fetch('/api/admin/videos?page=1&limit=200');
+      const json = await res.json();
+      if (json.success) applyVideos(json.data.videos, { replace: true });
+    } catch { /* live updates will catch up */ }
+  };
+
   function initSSE() {
     const source = new EventSource('/api/admin/events');
     source.addEventListener('initial-load', (e) => applyVideos(JSON.parse(e.data), { replace: true }));
@@ -210,6 +222,16 @@
       store.health = { ok: false, provider: null, components: null, checkedAt: new Date().toISOString() };
     }
     store.emit('health');
+  };
+
+  // The list of series. Episodes are ordinary videos (they carry seriesId/season/episode), so the
+  // live video list already has them; this adds the series themselves (title, seasons, visibility).
+  VF.refreshSeries = async function refreshSeries() {
+    try {
+      const res = await fetch('/api/admin/series');
+      const json = await res.json();
+      if (json.success) { store.series = json.data.series; store.seriesLoaded = true; store.emit('series'); }
+    } catch { /* the next refresh will retry */ }
   };
 
   // Totals, queue depth and processing engine, for the dashboard and System page
@@ -422,8 +444,9 @@
     renderConnection();
     renderBell();
     initSSE();
-    await Promise.all([VF.refreshHealth(), VF.refreshOverview()]); // so the first page already has real numbers
+    await Promise.all([VF.refreshHealth(), VF.refreshOverview(), VF.refreshSeries()]); // so the first page already has real numbers
     setInterval(VF.refreshHealth, 30000);
+    setInterval(() => { if (!document.hidden) VF.refreshSeries(); }, 20000);
     setInterval(() => { if (!document.hidden) VF.refreshOverview(); }, 5000);
     setInterval(() => { if (!bellPop.classList.contains('hidden')) renderBell(); }, 30000);
     navigate();

@@ -32,7 +32,7 @@ async function startPolling() {
       const videos = result.videos;
 
       for (const video of videos) {
-        const key = `${video.status}:${video.progress}`;
+        const key = [video.status, video.progress, video.published, video.title, video.seriesId, video.seasonNumber, video.episodeNumber, (video.renditions || []).join()].join(':');
         if (lastSnapshot[video.id] !== key) {
           lastSnapshot[video.id] = key;
           broadcast('video-update', withoutEvents(video));

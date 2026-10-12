@@ -16,6 +16,7 @@ import localS3Router from './routes/localS3';
 import eventsRouter from './routes/events';
 import metricsRouter from './routes/metrics';
 import adminRouter from './routes/admin';
+import adminSeriesRouter from './routes/adminSeries';
 import publicRouter from './routes/public';
 import { adminAuthRouter, requireAdmin, warnIfAdminOpen } from './middleware/adminAuth';
 import { publicLimiter } from './middleware/rateLimiter';
@@ -132,6 +133,7 @@ if (serveAdmin) {
   warnIfAdminOpen();
   app.use('/api/admin', adminAuthRouter);          // sign in / out / session (public by design)
   app.use('/api/admin', requireAdmin, adminRouter); // overview, queue, system, logs, publish, retry
+  app.use('/api/admin/series', requireAdmin, adminSeriesRouter);
   app.use('/api/admin/upload', requireAdmin, uploadRouter);
   app.use('/api/admin/videos', requireAdmin, uploadRouter);
   app.use('/api/admin/events', requireAdmin, eventsRouter);

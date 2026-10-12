@@ -70,6 +70,20 @@ Every video row in the admin *Videos* and *Processing Jobs* pages has **Pause** 
 - **Delete** works at any stage. On a queued or processing video it stops the job first ("Stop & delete"), then removes the original and every processed file. A stopped job is not counted as a failure and is not retried.
 - **Delete processed files** removes only the streaming output of a finished, failed or paused video. The video leaves the public site and becomes *Paused* with its original kept, so you can process it again with **Resume**. It is refused if the original upload is gone (use Delete instead).
 
+## Series, seasons and episodes
+
+Admin → **Series**. Create a series (title and description), and it starts with *Season 1*. Add more seasons with **Add a season** (0 is for specials). Episodes are ordinary videos with a series, season and episode number, so everything else (processing, qualities, rename, pause, retry) works the same.
+
+- **Upload episodes** on a season opens the Upload page with that series and season already chosen. Files are numbered in list order from the first free episode number, so uploading eight files gives episodes 1 to 8. Rename them afterwards from the series page.
+- **Add existing video** attaches a video you already uploaded. **Edit** changes an episode's series, season, number and title; two episodes can't share a slot (you get an error naming the clash).
+- **Remove from series** turns an episode back into a standalone video and sets it to draft, so it can't show up as a movie by accident.
+- **Publishing needs both levels.** Viewers see an episode only when the *episode* is published (and finished) **and** its *series* is published. New series are hidden. Unpublishing the series hides every episode at once, including their video files.
+- **Deleting a series** asks whether to keep the episode videos (as drafts) or delete them too.
+
+On the user site, series show as tiles in a *TV Series* row and on the *Series* page. A series page has the description, a **Play / Resume** button (it resumes an unfinished episode, offers the next one after a finished episode, or starts at S1 E1), a season picker and the episode list with progress and watched ticks. Episodes play with *Next episode* / *Previous*, autoplay into the next episode (across seasons), and a list of the season on the watch page. Series work with My List, search (by series or episode title), history and Continue Watching.
+
+Series are stored in `series.json` next to `db.json` in local mode. A DynamoDB version for AWS mode still needs to be written along with the other AWS data services.
+
 ## What stays on the viewer's device
 
 My List and watch history are stored in the viewer's browser (`localStorage`), because there are no user accounts yet. When you add login, move them to the server keyed by user id.

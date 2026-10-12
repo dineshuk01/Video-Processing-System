@@ -12,7 +12,7 @@
   const searchInput = document.getElementById('q');
   const searchForm = document.getElementById('search-form');
 
-  const state = { videos: {}, loaded: false, error: '' };
+  const state = { videos: {}, series: [], episodes: {}, loaded: false, error: '', seasonPick: {} };
   let currentView = null; // { update?, teardown? }
 
   // ─── Helpers ───────────────────────────────────────────────
@@ -46,6 +46,37 @@
   const ageMs = (v) => Date.now() - new Date(v.publishedAt).getTime();
   const watchHref = (v) => `#/watch/${encodeURIComponent(v.id)}`;
 
+  // ─── Series helpers ────────────────────────────────────────
+  // Season 0 is for specials; everything else reads "S1 E3"
+  const epLabel = (e) => (e.season === 0 ? `Special ${e.episode}` : `S${e.season} E${e.episode}`);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const seriesHref = (s) => `#/series/${encodeURIComponent(s.id)}`;
+  const allEpisodes = (s) => s.seasons.flatMap((season) => season.episodes);
+  const seriesLine = (s) => `${plural(s.seasonCount, 'season')} · ${plural(s.episodeCount, 'episode')}`;
+  // My List keeps movies by id and series as "series:<id>"
+  const listIdOf = (v) => (v.episode ? `series:${v.episode.seriesId}` : v.id);
+  const seriesLibrary = () => [...state.series].sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+  // Any playable thing the viewer can have in history / lists: a movie or an episode
+  const itemById = (id) => state.videos[id] || state.episodes[id] || null;
+  const savedPos = (id) => parseFloat(storage.get(`vs-pos-${id}`));
+  const unfinished = (v) => { const pos = savedPos(v.id); return pos > 5 && seconds(v) && pos < seconds(v) - 5 ? pos : 0; };
+
+  // What the Play button of a series should do. `kind` says why: resume an unfinished episode, go
+  // back to one that was started, move on after a finished episode, or start from the first.
+  function playTarget(s) {
+    const eps = allEpisodes(s);
+    const seen = eps.map((e) => ({ e, at: parseFloat(storage.get(`vs-seen-${e.id}`)) || 0 })).filter((x) => x.at).sort((a, b) => b.at - a.at)[0];
+    if (seen) {
+      const pos = unfinished(seen.e);
+      if (pos) return { ep: seen.e, pos, kind: 'resume', label: `Resume ${epLabel(seen.e)}` };
+      if (!storage.get(`vs-watched-${seen.e.id}`)) return { ep: seen.e, pos: 0, kind: 'again', label: `Play ${epLabel(seen.e)}` };
+      const next = eps[eps.findIndex((e) => e.id === seen.e.id) + 1];
+      if (next) return { ep: next, pos: 0, kind: 'next', label: `Play ${epLabel(next)}` };
+    }
+    return { ep: eps[0], pos: 0, kind: 'first', label: `Play ${epLabel(eps[0])}` };
+  }
+
+
   function library() {
     return Object.values(state.videos).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
   }
@@ -58,7 +89,7 @@
     const i = list.indexOf(id);
     if (i >= 0) list.splice(i, 1); else list.unshift(id);
     storage.set('vs-list', JSON.stringify(list));
-    const v = state.videos[id];
+    const v = id.startsWith('series:') ? state.series.find((x) => `series:${x.id}` === id) : state.videos[id];
     toast(i >= 0 ? 'Removed from My List' : `Added to My List${v ? `: ${titleOf(v)}` : ''}`, 'info', 2200);
   }
 
@@ -73,12 +104,21 @@
     storage.set('vs-history', JSON.stringify(readHistory().filter((h) => h.id !== id)));
   }
 
-  // Videos the viewer started but did not finish, most recently watched first
+  // Things the viewer started but did not finish, most recently watched first. A series shows once:
+  // its unfinished episode, or the next episode after one they finished.
   function continueWatching() {
-    return library().map((v) => {
-      const pos = parseFloat(storage.get(`vs-pos-${v.id}`));
-      return { v, pos, seen: parseFloat(storage.get(`vs-seen-${v.id}`)) || 0 };
-    }).filter(({ v, pos }) => pos > 5 && seconds(v) && pos < seconds(v) - 5).sort((a, b) => b.seen - a.seen);
+    const entries = [];
+    for (const v of library()) {
+      const pos = unfinished(v);
+      if (pos) entries.push({ v, pos, seen: parseFloat(storage.get(`vs-seen-${v.id}`)) || 0 });
+    }
+    for (const series of state.series) {
+      const t = playTarget(series);
+      const lastSeen = Math.max(0, ...allEpisodes(series).map((e) => parseFloat(storage.get(`vs-seen-${e.id}`)) || 0));
+      if (!lastSeen) continue; // never started this series
+      entries.push({ v: t.ep, pos: t.pos, seen: lastSeen, upNext: t.kind === 'next' });
+    }
+    return entries.sort((a, b) => b.seen - a.seen);
   }
 
   const FILTERS = {
@@ -92,17 +132,29 @@
   async function load() {
     try {
       // 'no-cache' = always ask the server whether the list changed (cheap 304 if not), so a rename shows at once
-      const res = await fetch('/api/public/videos', { cache: 'no-cache' });
-      const json = await res.json();
+      const [moviesRes, seriesRes] = await Promise.all([
+        fetch('/api/public/videos', { cache: 'no-cache' }),
+        fetch('/api/public/series', { cache: 'no-cache' }).catch(() => null),
+      ]);
+      const json = await moviesRes.json();
       if (!json.success) throw new Error(json.error?.message || 'Could not load videos');
+      const seriesJson = seriesRes ? await seriesRes.json().catch(() => null) : null;
+      const series = seriesJson && seriesJson.success ? seriesJson.data.series : [];
+
       const next = {};
       json.data.videos.forEach((v) => { next[v.id] = v; });
+      const episodes = {};
+      series.forEach((sr) => allEpisodes(sr).forEach((e) => { episodes[e.id] = { ...e, seriesId: sr.id, seriesTitle: sr.title }; }));
 
-      // Anything that was not there before the last refresh is a newly published video
-      const fresh = state.loaded ? json.data.videos.filter((v) => !state.videos[v.id]) : [];
+      // Anything that was not there before the last refresh is newly published
+      const freshMovies = state.loaded ? json.data.videos.filter((v) => !state.videos[v.id]) : [];
+      const freshEpisodes = state.loaded ? Object.values(episodes).filter((e) => !state.episodes[e.id]) : [];
       state.videos = next;
+      state.series = series;
+      state.episodes = episodes;
       state.error = '';
-      if (fresh.length) toast(fresh.length === 1 ? `New on VideoStream: ${titleOf(fresh[0])}` : `${fresh.length} new videos on VideoStream`, 'info');
+      if (freshMovies.length) toast(freshMovies.length === 1 ? `New on VideoStream: ${titleOf(freshMovies[0])}` : `${freshMovies.length} new videos on VideoStream`, 'info');
+      else if (freshEpisodes.length) toast(freshEpisodes.length === 1 ? `New episode: ${freshEpisodes[0].seriesTitle} ${epLabel(freshEpisodes[0])}` : `${freshEpisodes.length} new episodes`, 'info');
     } catch (err) {
       if (!state.loaded) state.error = err.message;
     }
@@ -153,6 +205,7 @@
       case 'browse': setNav(route.param); currentView = gridView(FILTERS[route.param] ? FILTERS[route.param].title : 'Browse', route.param); break;
       case 'mylist': setNav('mylist'); currentView = gridView('My List', 'mylist'); break;
       case 'history': setNav('history'); currentView = gridView('Watch history', 'history'); break;
+      case 'series': setNav('series'); currentView = route.param ? seriesView(route.param) : gridView('TV Series', 'series'); break;
       default: setNav('home'); currentView = homeView();
     }
   }
@@ -199,6 +252,82 @@
       </article>`;
   }
 
+  const seriesThumb = (s) => thumbHtml({ thumbnailUrl: s.posterUrl });
+
+  function seriesTileHtml(s) {
+    const listed = inList(`series:${s.id}`);
+    const t = playTarget(s);
+    return `
+      <article class="tile">
+        <a class="tile-thumb" href="${seriesHref(s)}" aria-label="${esc(s.title)}, a series">${seriesThumb(s)}<span class="tile-badge">Series</span></a>
+        <div class="tile-info">
+          <div class="tile-btns">
+            <a class="round round-play" href="${watchHref(t.ep)}" aria-label="${esc(t.label)}">${svg('play', 16)}</a>
+            <button class="round" data-act="list" data-id="series:${esc(s.id)}" aria-pressed="${listed}" aria-label="${listed ? 'Remove from' : 'Add to'} My List">${svg(listed ? 'check' : 'plus', 16)}</button>
+            <a class="round round-end" href="${seriesHref(s)}" aria-label="All episodes">${svg('chevron', 16)}</a>
+          </div>
+          <h3 class="tile-title">${esc(s.title)}</h3>
+          <p class="tile-meta">${esc(seriesLine(s))}</p>
+        </div>
+      </article>`;
+  }
+
+  // A continue-watching tile for an episode: the series name, with the episode underneath
+  function episodeTileHtml(ep, pos, upNext) {
+    const progress = pos && seconds(ep) ? `<span class="tile-prog"><i style="width:${Math.min(100, (pos / seconds(ep)) * 100).toFixed(1)}%"></i></span>` : '';
+    return `
+      <article class="tile">
+        <a class="tile-thumb" href="${watchHref(ep)}" aria-label="Play ${esc(ep.seriesTitle || '')} ${esc(epLabel(ep))}">${thumbHtml(ep)}${upNext ? '<span class="tile-badge">Up next</span>' : ''}${progress}</a>
+        <div class="tile-info">
+          <div class="tile-btns">
+            <a class="round round-play" href="${watchHref(ep)}" aria-label="Play">${svg('play', 16)}</a>
+            <a class="round round-end" href="#/series/${encodeURIComponent(ep.seriesId)}" aria-label="All episodes">${svg('chevron', 16)}</a>
+          </div>
+          <h3 class="tile-title">${esc(ep.seriesTitle || '')}</h3>
+          <p class="tile-meta">${esc(epLabel(ep))} · ${esc(titleOf(ep))}</p>
+        </div>
+      </article>`;
+  }
+
+  function seriesCardHtml(s) {
+    return `
+      <a class="gcard" href="${seriesHref(s)}">
+        <div class="gthumb">${seriesThumb(s)}<span class="tile-badge">Series</span></div>
+        <h3 class="tile-title">${esc(s.title)}</h3>
+        <p class="tile-meta">${esc(seriesLine(s))}</p>
+      </a>`;
+  }
+
+  function episodeCardHtml(ep) {
+    return `
+      <a class="gcard" href="${watchHref(ep)}">
+        <div class="gthumb">${thumbHtml(ep)}${seconds(ep) ? `<span class="gdur">${esc(formatDuration(seconds(ep)))}</span>` : ''}</div>
+        <h3 class="tile-title">${esc(ep.seriesTitle || '')}</h3>
+        <p class="tile-meta">${esc(epLabel(ep))} · ${esc(titleOf(ep))}</p>
+      </a>`;
+  }
+
+  // One row of the episode list (series page and the watch page's season list)
+  function episodeRowHtml(ep, current) {
+    const pos = unfinished(ep);
+    const watched = !!storage.get(`vs-watched-${ep.id}`);
+    const progress = pos ? `<span class="tile-prog"><i style="width:${Math.min(100, (pos / seconds(ep)) * 100).toFixed(1)}%"></i></span>` : '';
+    return `
+      <li><a class="ep ${current ? 'current' : ''}" href="${watchHref(ep)}" ${current ? 'aria-current="true"' : ''}>
+        <span class="ep-num">${ep.episode}</span>
+        <div class="ep-thumb">${thumbHtml(ep)}${progress}${watched && !pos ? `<span class="ep-done" title="Watched">${svg('check', 14)}</span>` : ''}${seconds(ep) ? `<span class="gdur">${esc(formatDuration(seconds(ep)))}</span>` : ''}</div>
+        <div class="ep-info"><h3>${esc(titleOf(ep))}</h3>
+          <p class="tile-meta">${current ? 'Now playing' : `${height(ep) >= 720 ? '<span class="hdtag">HD</span> ' : ''}${esc(timeAgo(ep.publishedAt))}`}</p></div>
+      </a></li>`;
+  }
+
+  // Search / list / history cards work for movies, episodes and series alike
+  function cardFor(item) {
+    if (item.kind === 'series') return seriesCardHtml(item);
+    if (item.seriesId) return episodeCardHtml(item);
+    return gridCardHtml(item);
+  }
+
   function gridCardHtml(v) {
     return `
       <a class="gcard" href="${watchHref(v)}">
@@ -211,12 +340,14 @@
   // A history card: progress bar for unfinished videos, plus a button to remove it
   function historyCardHtml(v) {
     const pos = parseFloat(storage.get(`vs-pos-${v.id}`));
+    const heading = v.seriesId ? esc(v.seriesTitle || '') : esc(titleOf(v));
+    const sub = v.seriesId ? `${esc(epLabel(v))} · ${esc(titleOf(v))}` : metaLine(v);
     const progress = pos > 5 && seconds(v) ? `<span class="tile-prog"><i style="width:${Math.min(100, (pos / seconds(v)) * 100).toFixed(1)}%"></i></span>` : '';
     return `
       <div class="gcard hcard">
         <a href="${watchHref(v)}"><div class="gthumb">${thumbHtml(v)}${seconds(v) ? `<span class="gdur">${esc(formatDuration(seconds(v)))}</span>` : ''}${progress}</div>
-          <h3 class="tile-title">${esc(titleOf(v))}</h3></a>
-        <p class="tile-meta">${metaLine(v)}</p>
+          <h3 class="tile-title">${heading}</h3></a>
+        <p class="tile-meta">${sub}</p>
         <button class="link-small" data-act="remove-history" data-id="${esc(v.id)}">Remove from history</button>
       </div>`;
   }
@@ -318,7 +449,8 @@
     if (renderGate()) return {};
 
     const all = library();
-    if (all.length === 0) {
+    const seriesAll = seriesLibrary();
+    if (all.length === 0 && seriesAll.length === 0) {
       app.innerHTML = `<div class="page-pad">${notice('film', 'Nothing to watch yet', 'New videos will appear here as soon as they are published. Check back soon.')}</div>`;
       return {};
     }
@@ -327,34 +459,60 @@
     const scrolled = {};
     app.querySelectorAll('.row').forEach((r) => { scrolled[r.getAttribute('aria-label')] = r.querySelector('.row-scroll').scrollLeft; });
 
-    const featured = all[0];
-    const listed = readList().map((id) => state.videos[id]).filter(Boolean);
+    // The banner features whichever is newest: a movie or a series (a new episode bumps its series)
+    const newestMovie = all[0];
+    const newestSeries = seriesAll[0];
+    const featuredIsSeries = !!newestSeries && (!newestMovie || new Date(newestSeries.publishedAt) > new Date(newestMovie.publishedAt));
+
+    const listed = readList().map((id) => (id.startsWith('series:') ? state.series.find((x) => `series:${x.id}` === id) : state.videos[id])).filter(Boolean);
     const resume = continueWatching();
     const rows = [
-      resume.length ? rowHtml('Continue Watching', resume.map(({ v, pos }) => tileHtml(v, pos)).join('')) : '',
-      rowHtml('Latest videos', all.map((v) => tileHtml(v)).join('')),
-      listed.length ? rowHtml('My List', listed.map((v) => tileHtml(v)).join('')) : '',
+      resume.length ? rowHtml('Continue Watching', resume.map(({ v, pos, upNext }) => (v.seriesId ? episodeTileHtml(v, pos, upNext) : tileHtml(v, pos))).join('')) : '',
+      seriesAll.length ? rowHtml('TV Series', seriesAll.map(seriesTileHtml).join('')) : '',
+      all.length ? rowHtml('Latest videos', all.map((v) => tileHtml(v)).join('')) : '',
+      listed.length ? rowHtml('My List', listed.map((v) => (v.seasons ? seriesTileHtml(v) : tileHtml(v))).join('')) : '',
       ...Object.keys(FILTERS).map((key) => {
         const items = all.filter(FILTERS[key].test);
         return items.length ? rowHtml(FILTERS[key].title, items.map((v) => tileHtml(v)).join('')) : '';
       }),
     ].join('');
 
-    app.innerHTML = `
-      <section class="billboard" aria-label="Featured video">
-        ${featured.thumbnailUrl ? `<img class="bb-img" src="${esc(featured.thumbnailUrl)}" alt="" />` : ''}
-        <div class="bb-shade"></div>
-        <div class="bb-body">
-          <span class="bb-tag">${ageMs(featured) < 864e5 ? 'New' : 'Latest'}</span>
-          <h1>${esc(titleOf(featured))}</h1>
-          <p class="bb-meta">${metaLine(featured)}</p>
-          <div class="bb-actions">
-            <a class="btn btn-light btn-lg" href="${watchHref(featured)}">${svg('play', 22)} Play</a>
-            <button class="btn btn-gray btn-lg" data-act="info" data-id="${esc(featured.id)}">${svg('info', 22)} More info</button>
+    let banner;
+    if (featuredIsSeries) {
+      const t = playTarget(newestSeries);
+      banner = `
+        <section class="billboard" aria-label="Featured series">
+          ${newestSeries.posterUrl ? `<img class="bb-img" src="${esc(newestSeries.posterUrl)}" alt="" />` : ''}
+          <div class="bb-shade"></div>
+          <div class="bb-body">
+            <span class="bb-tag">Series</span>
+            <h1>${esc(newestSeries.title)}</h1>
+            <p class="bb-meta">${esc(seriesLine(newestSeries))}</p>
+            ${newestSeries.description ? `<p class="bb-desc">${esc(newestSeries.description)}</p>` : ''}
+            <div class="bb-actions">
+              <a class="btn btn-light btn-lg" href="${watchHref(t.ep)}">${svg('play', 22)} ${esc(t.label)}</a>
+              <a class="btn btn-gray btn-lg" href="${seriesHref(newestSeries)}">${svg('info', 22)} Episodes</a>
+            </div>
           </div>
-        </div>
-      </section>
-      <div class="rows">${rows}</div>`;
+        </section>`;
+    } else {
+      banner = `
+        <section class="billboard" aria-label="Featured video">
+          ${newestMovie.thumbnailUrl ? `<img class="bb-img" src="${esc(newestMovie.thumbnailUrl)}" alt="" />` : ''}
+          <div class="bb-shade"></div>
+          <div class="bb-body">
+            <span class="bb-tag">${ageMs(newestMovie) < 864e5 ? 'New' : 'Latest'}</span>
+            <h1>${esc(titleOf(newestMovie))}</h1>
+            <p class="bb-meta">${metaLine(newestMovie)}</p>
+            <div class="bb-actions">
+              <a class="btn btn-light btn-lg" href="${watchHref(newestMovie)}">${svg('play', 22)} Play</a>
+              <button class="btn btn-gray btn-lg" data-act="info" data-id="${esc(newestMovie.id)}">${svg('info', 22)} More info</button>
+            </div>
+          </div>
+        </section>`;
+    }
+
+    app.innerHTML = `${banner}<div class="rows">${rows}</div>`;
     app.querySelectorAll('.row').forEach((r) => { r.querySelector('.row-scroll').scrollLeft = scrolled[r.getAttribute('aria-label')] || 0; });
     wireRows(app);
     return {};
@@ -367,29 +525,96 @@
     document.title = `${title} — VideoStream`;
     if (renderGate()) return {};
 
+    const tagSeries = (list) => list.map((x) => ({ ...x, kind: 'series' }));
     let items = library();
     if (kind === 'search') {
       const needle = q.toLowerCase();
-      items = items.filter((v) => !needle || titleOf(v).toLowerCase().includes(needle) || v.id.toLowerCase().includes(needle));
+      const hit = (text) => !needle || (text || '').toLowerCase().includes(needle);
+      const movies = items.filter((v) => hit(titleOf(v)) || v.id.toLowerCase().includes(needle));
+      // A series matches by its title or description, or by the title of any of its episodes
+      const series = tagSeries(seriesLibrary().filter((sr) => hit(sr.title) || hit(sr.description) || allEpisodes(sr).some((e) => hit(e.title))));
+      items = [...series, ...movies];
+    } else if (kind === 'series') {
+      items = tagSeries(seriesLibrary());
     } else if (kind === 'mylist') {
-      items = readList().map((id) => state.videos[id]).filter(Boolean);
+      items = readList().map((id) => (id.startsWith('series:') ? tagSeries(state.series.filter((x) => `series:${x.id}` === id))[0] : state.videos[id])).filter(Boolean);
     } else if (kind === 'history') {
-      items = readHistory().map((h) => state.videos[h.id]).filter(Boolean);
+      items = readHistory().map((h) => itemById(h.id)).filter(Boolean);
     } else if (FILTERS[kind]) {
       items = items.filter(FILTERS[kind].test);
     }
 
     const empty = kind === 'mylist'
-      ? notice('plus', 'Your list is empty', 'Press + on any video to save it here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
+      ? notice('plus', 'Your list is empty', 'Press + on any video or series to save it here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
       : kind === 'history'
         ? notice('film', 'No watch history yet', 'Videos you watch will appear here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
+      : kind === 'series'
+        ? notice('film', 'No series yet', 'Series will appear here as soon as they are published.', '<a class="btn btn-light" href="#/">Back to home</a>')
       : kind === 'search'
-        ? notice('film', 'No videos found', `Nothing matches “${q}”.`, '<a class="btn btn-light" href="#/">Back to home</a>')
+        ? notice('film', 'Nothing found', `Nothing matches “${q}”.`, '<a class="btn btn-light" href="#/">Back to home</a>')
         : notice('film', 'Nothing here yet', 'No videos match this category right now.', '<a class="btn btn-light" href="#/">Back to home</a>');
 
     const clearBtn = kind === 'history' && items.length ? '<button class="btn btn-gray btn-sm" data-act="clear-history">Clear history</button>' : '';
     app.innerHTML = `<div class="page-pad"><div class="page-head-row"><h1 class="page-title">${esc(title)}</h1>${clearBtn}</div>
-      ${items.length ? `<div class="ggrid">${items.map((v) => (kind === 'history' ? historyCardHtml(v) : gridCardHtml(v))).join('')}</div>` : empty}</div>`;
+      ${items.length ? `<div class="ggrid">${items.map((v) => (kind === 'history' ? historyCardHtml(v) : cardFor(v))).join('')}</div>` : empty}</div>`;
+    return {};
+  }
+
+  // ═════════════════════════════════════════════════════════
+  // A series: seasons and episodes
+  // ═════════════════════════════════════════════════════════
+  function seriesView(id) {
+    if (renderGate()) return {};
+    const series = state.series.find((x) => x.id === id);
+    if (!series) {
+      document.title = 'VideoStream';
+      app.innerHTML = `<div class="page-pad">${notice('film', 'Series not found', 'It may have been removed or is not available yet.', '<a class="btn btn-light" href="#/series">Browse series</a>')}</div>`;
+      return {};
+    }
+    document.title = `${series.title} — VideoStream`;
+
+    const target = playTarget(series);
+    const seasonNumbers = series.seasons.map((x) => x.number);
+    const picked = seasonNumbers.includes(state.seasonPick[id]) ? state.seasonPick[id] : target.ep.season;
+    const seasonLabel = (n) => (n === 0 ? 'Specials' : `Season ${n}`);
+    const listIdKey = `series:${id}`;
+    const listed = inList(listIdKey);
+    const episodesFor = (n) => (series.seasons.find((x) => x.number === n) || { episodes: [] }).episodes;
+    const listHtml = (n) => episodesFor(n).map((e) => episodeRowHtml(e, false)).join('');
+
+    app.innerHTML = `
+      <section class="billboard series-hero" aria-label="${esc(series.title)}">
+        ${series.posterUrl ? `<img class="bb-img" src="${esc(series.posterUrl)}" alt="" />` : ''}
+        <div class="bb-shade"></div>
+        <div class="bb-body">
+          <span class="bb-tag">Series</span>
+          <h1>${esc(series.title)}</h1>
+          <p class="bb-meta">${esc(seriesLine(series))}</p>
+          ${series.description ? `<p class="bb-desc">${esc(series.description)}</p>` : ''}
+          <div class="bb-actions">
+            <a class="btn btn-light btn-lg" href="${watchHref(target.ep)}">${svg('play', 22)} ${esc(target.label)}</a>
+            <button class="btn btn-gray btn-lg" data-act="list" data-id="${esc(listIdKey)}" aria-pressed="${listed}">${svg(listed ? 'check' : 'plus', 20)} My List</button>
+          </div>
+        </div>
+      </section>
+      <div class="series-body">
+        <div class="season-bar">
+          <h2>Episodes</h2>
+          ${seasonNumbers.length > 1
+            ? `<label class="sr-only" for="season-select">Season</label>
+               <select id="season-select" class="select season-select">${seasonNumbers.map((n) => `<option value="${n}" ${n === picked ? 'selected' : ''}>${esc(seasonLabel(n))} (${plural(episodesFor(n).length, 'episode')})</option>`).join('')}</select>`
+            : `<span class="season-name">${esc(seasonLabel(seasonNumbers[0]))}</span>`}
+        </div>
+        <ol class="ep-list" id="ep-list">${listHtml(picked)}</ol>
+      </div>`;
+
+    const select = app.querySelector('#season-select');
+    if (select) {
+      select.addEventListener('change', () => {
+        state.seasonPick[id] = Number(select.value);
+        app.querySelector('#ep-list').innerHTML = listHtml(state.seasonPick[id]);
+      });
+    }
     return {};
   }
 
@@ -413,7 +638,7 @@
         try {
           const res = await fetch(`/api/public/videos/${encodeURIComponent(id)}`, { cache: 'no-cache' });
           const json = await res.json();
-          if (json.success) { video = json.data; state.videos[id] = video; }
+          if (json.success) { video = json.data; if (!video.episode) state.videos[id] = video; } // episodes are not movies
         } catch { /* fall through to not found */ }
         if (destroyed) return;
       }
@@ -422,6 +647,10 @@
     }
 
     function nextVideo() {
+      if (video.episode) {
+        const n = video.episode.nextId;
+        return n ? (state.episodes[n] || { id: n, title: 'Next episode' }) : null;
+      }
       const list = library();
       const i = list.findIndex((v) => v.id === id);
       return list[i + 1] || list[i - 1] || null;
@@ -430,6 +659,13 @@
     function renderMore() {
       const el = document.getElementById('more-grid');
       if (!el) return;
+      if (video.episode) {
+        // For an episode, the useful list is the rest of its season
+        const series = state.series.find((x) => x.id === video.episode.seriesId);
+        const season = series && series.seasons.find((x) => x.number === video.episode.season);
+        el.innerHTML = season ? season.episodes.map((e) => episodeRowHtml(e, e.id === id)).join('') : '';
+        return;
+      }
       const list = library().filter((v) => v.id !== id).slice(0, 12);
       el.innerHTML = list.length ? list.map(gridCardHtml).join('') : '<p class="tile-meta">No other videos yet.</p>';
     }
@@ -454,11 +690,14 @@
         <div class="watch-body">
           <div class="watch-head">
             <div>
-              <h1 class="w-title">${esc(titleOf(video))}</h1>
+              ${video.episode ? `<a class="series-link" href="#/series/${encodeURIComponent(video.episode.seriesId)}">${esc(video.episode.seriesTitle)}</a>` : ''}
+              <h1 class="w-title">${video.episode ? `<span class="ep-badge">${esc(epLabel(video.episode))}</span> ` : ''}${esc(titleOf(video))}</h1>
               <p class="tile-meta">${metaLine(video)}${qualityOf(video) ? ` <span class="dot">·</span> ${esc(qualityOf(video))}` : ''}</p>
             </div>
             <div class="w-actions">
-              <button class="btn btn-gray btn-sm" id="list-btn" data-act="list" data-id="${esc(video.id)}" aria-pressed="${inList(video.id)}">${svg(inList(video.id) ? 'check' : 'plus', 15)} My List</button>
+              ${video.episode && video.episode.prevId ? `<a class="btn btn-gray btn-sm" href="#/watch/${encodeURIComponent(video.episode.prevId)}">${svg('left', 15)} Previous</a>` : ''}
+              ${video.episode && video.episode.nextId ? `<a class="btn btn-gray btn-sm" href="#/watch/${encodeURIComponent(video.episode.nextId)}">Next episode ${svg('right', 15)}</a>` : ''}
+              <button class="btn btn-gray btn-sm" id="list-btn" data-act="list" data-id="${esc(listIdOf(video))}" aria-pressed="${inList(listIdOf(video))}">${svg(inList(listIdOf(video)) ? 'check' : 'plus', 15)} My List</button>
               <button class="btn btn-gray btn-sm" id="share">${svg('share', 15)} Share</button>
             </div>
           </div>
@@ -470,8 +709,8 @@
             <label class="switch-label"><input type="checkbox" id="autonext" class="switch-input" role="switch" /><span>Autoplay next</span></label>
           </div>
 
-          <h2 class="row-title flush">More videos</h2>
-          <div class="ggrid" id="more-grid"></div>
+          <h2 class="row-title flush">${video.episode ? `${esc(video.episode.seriesTitle)} · ${video.episode.season === 0 ? 'Specials' : `Season ${video.episode.season}`}` : 'More videos'}</h2>
+          <${video.episode ? 'ol' : 'div'} class="${video.episode ? 'ep-list' : 'ggrid'}" id="more-grid"></${video.episode ? 'ol' : 'div'}>
         </div>`;
       teardownPlayer = setupPlayer();
       renderMore();
@@ -539,6 +778,7 @@
       function stopCountdown() { clearInterval(countdown); countdown = null; nextBox.classList.remove('visible'); }
       videoEl.addEventListener('ended', () => {
         storage.del(posKey);
+        storage.set(`vs-watched-${video.id}`, '1'); // lets a series offer the next episode
         const next = nextVideo();
         if (!auto.checked || !next) return;
         let left = 5;
@@ -650,17 +890,18 @@
         if (!teardownPlayer && state.loaded && !destroyed) { video = state.videos[id] || video; resolve(); return; }
         renderMore();
         // Keep the title in step if an admin renamed the video while it is open
-        const latest = state.videos[id];
+        const latest = video.episode ? state.episodes[id] : state.videos[id];
         if (latest && latest.title !== video.title) {
-          video = latest;
+          video = video.episode ? { ...video, title: latest.title } : latest;
           const heading = app.querySelector('.w-title');
-          if (heading) heading.textContent = titleOf(latest);
-          document.title = `${titleOf(latest)} — VideoStream`;
+          if (heading) heading.innerHTML = `${video.episode ? `<span class="ep-badge">${esc(epLabel(video.episode))}</span> ` : ''}${esc(titleOf(video))}`;
+          document.title = `${titleOf(video)} — VideoStream`;
         }
         const btn = document.getElementById('list-btn');
         if (btn) {
-          btn.setAttribute('aria-pressed', String(inList(id)));
-          btn.innerHTML = `${svg(inList(id) ? 'check' : 'plus', 15)} My List`;
+          const key = listIdOf(video);
+          btn.setAttribute('aria-pressed', String(inList(key)));
+          btn.innerHTML = `${svg(inList(key) ? 'check' : 'plus', 15)} My List`;
         }
       },
       teardown() { destroyed = true; if (teardownPlayer) teardownPlayer(); },

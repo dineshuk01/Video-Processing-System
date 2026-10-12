@@ -149,6 +149,25 @@ router.patch('/videos/:id', async (req: Request, res: Response, next: NextFuncti
   }
 });
 
+// Attach a video to a series (or move / renumber it inside one)
+router.post('/videos/:id/series', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { seriesId, seasonNumber, episodeNumber } = req.body || {};
+    return ResponseHandler.success(res, withoutEvents(await videoService.assignEpisode(req.params.id, { seriesId, seasonNumber, episodeNumber })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Take a video out of its series; it becomes a standalone draft
+router.delete('/videos/:id/series', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, withoutEvents(await videoService.detachEpisode(req.params.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/videos/:id/pause', async (req: Request, res: Response, next: NextFunction) => {
   try {
     return ResponseHandler.success(res, withoutEvents(await videoService.pauseVideo(req.params.id)));

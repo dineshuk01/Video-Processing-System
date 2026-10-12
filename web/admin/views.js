@@ -32,6 +32,9 @@
   const reachesClass = (v, q) => !v.metadata || !v.metadata.width
     || v.metadata.width >= CLASS_WIDTH[q] * 0.98 || v.metadata.height >= q * 0.98;
 
+  const seriesNameOf = (id) => { const s = store.series.find((x) => x.id === id); return s ? s.title : 'a series'; };
+  const episodeTag = (v) => (v.seriesId ? `<span class="series-chip">${esc(seriesNameOf(v.seriesId))} · S${v.seasonNumber} E${v.episodeNumber}</span> ` : '');
+
   const visibilityPill = (v) => (v.status !== 'COMPLETED'
     ? '<span class="muted">—</span>'
     : v.published ? '<span class="pill pill-COMPLETED">Published</span>' : '<span class="pill pill-PENDING">Draft</span>');
@@ -189,6 +192,10 @@
     if (canPause(video)) items.push({ label: 'Pause processing', icon: 'pause', onClick: () => pauseVideo(video.id) });
     if (canRetry(video)) items.push({ label: retryLabel(video), icon: 'refresh', onClick: () => retryVideo(video.id) });
     items.push({ label: 'Rename', icon: 'edit', onClick: () => openEditDialog(video.id, { focusTitle: true }) });
+    items.push(video.seriesId
+      ? { label: 'Episode details (series, season, number)', icon: 'tv', onClick: () => VF.openAssignDialog(video.id) }
+      : { label: 'Add to a series', icon: 'tv', onClick: () => VF.openAssignDialog(video.id) });
+    if (video.seriesId) items.push({ label: 'Remove from series', icon: 'x', onClick: () => VF.detachFromSeries(video.id) });
     items.push({ label: 'Edit settings', icon: 'settings', onClick: () => openEditDialog(video.id) });
     if (canDeleteProcessed(video)) items.push({ label: 'Delete processed files', icon: 'trash', danger: true, onClick: () => deleteProcessedFiles(video.id) });
     items.push({ label: ['PROCESSING', 'UPLOADED'].includes(video.status) ? 'Stop & delete' : 'Delete video', icon: 'trash', danger: true, onClick: () => deleteVideo(video.id) });
@@ -521,7 +528,7 @@
           key: (v) => v.id,
           html: (v) => `<tr class="clickable" data-href="${watchHref(v)}">
             <td><a class="name-cell" href="${watchHref(v)}">${thumb(v)}<span><span class="cell-title">${esc(titleOf(v))}</span>
-              <span class="cell-sub">${v.title ? `${esc(v.originalName)} • ` : ''}${formatBytes(v.fileSize)}</span></span></a></td>
+              <span class="cell-sub">${episodeTag(v)}${v.title ? `${esc(v.originalName)} • ` : ''}${formatBytes(v.fileSize)}</span></span></a></td>
             <td>${pill(v.status)}${v.status === 'PROCESSING' ? ` <span class="pct">${Math.round(v.progress || 0)}%</span>` : ''}</td>
             <td>${v.status === 'COMPLETED'
               ? `<button class="switch-btn ${v.published ? 'on' : ''}" role="switch" aria-checked="${!!v.published}" data-publish="${esc(v.id)}" data-to="${!v.published}" aria-label="${v.published ? 'Unpublish' : 'Publish'} ${esc(titleOf(v))}"><span class="knob"></span></button> <span class="switch-label">${v.published ? 'Published' : 'Draft'}</span>`
@@ -1155,6 +1162,7 @@
     };
   }
 
-  // Exposed so the job dialog can be opened from the row menu
+  // Exposed so the job dialog can be opened from the row menu, and for the series pages (series.js)
   VF.openJobDialog = openJobDialog;
+  VF.admin = { api, pill, titleOf, thumb, durationOf, qualityOf, setPublished, rowMenu, retryVideo, deleteVideo, openEditDialog, openJobDialog, visibilityPill, phaseOf };
 })();

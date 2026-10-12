@@ -13,6 +13,7 @@ export function setPublishedCache(id: string, ok: boolean) {
 }
 
 // Called whenever publishing changes, so a (un)publish takes effect immediately in this process
-export function clearPublishedCache(id: string) {
-  cache.delete(id);
+export function clearPublishedCache(id?: string) {
+  if (id === undefined) cache.clear();
+  else cache.delete(id);
 }

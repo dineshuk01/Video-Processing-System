@@ -38,6 +38,9 @@ export interface VideoRecord {
   qualities?: number[];            // renditions to generate; all when omitted
   allowUpscale?: boolean;          // also make sizes larger than the source (no extra detail, bigger files)
   renditions?: string[];           // what processing actually produced, e.g. ['360p', '480p']
+  seriesId?: string;               // set when this video is an episode of a series
+  seasonNumber?: number;
+  episodeNumber?: number;
   attempts?: number;               // processing attempts so far
   events?: VideoEvent[];           // processing log (capped)
   rawObjectKey?: string;
@@ -54,4 +57,16 @@ export interface VideoRecord {
   processingStartedAt?: string;
   completedAt?: string;
   failedAt?: string;
+}
+
+// A TV series. Episodes are ordinary videos that point at it (seriesId + season + episode).
+export interface Series {
+  id: string;
+  title: string;
+  description?: string;
+  published: boolean;       // an unpublished series hides all of its episodes from the public site
+  publishedAt?: string;
+  seasons: number[];        // season numbers, including ones that have no episodes yet
+  createdAt: string;
+  updatedAt: string;
 }

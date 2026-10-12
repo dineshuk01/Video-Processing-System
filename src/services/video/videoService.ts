@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { AVAILABLE_QUALITIES, VideoRecord, VideoStatus } from '../../types';
+import { AVAILABLE_QUALITIES, Series, VideoRecord, VideoStatus } from '../../types';
 import { dbService } from '../db/dbService';
 import { getStorageService } from '../storage/storageService';
 import { getQueueService } from '../queue/queueService';
@@ -7,6 +7,7 @@ import { Logger } from '../../utils/logger';
 import { HttpError } from '../../utils/responseHandler';
 import { cdnService } from '../cdn/cdnService';
 import { clearPublishedCache } from './publishedCache';
+import { seriesService, parseSeasonNumber, parseEpisodeNumber } from '../series/seriesService';
 
 // What the public site may know about a video. Nothing about jobs, errors, storage keys or sizes.
 export interface PublicVideo {
@@ -20,6 +21,37 @@ export interface PublicVideo {
   height: number;
   fps: number;
   publishedAt: string;
+  /** Present when the video is an episode of a series */
+  episode?: {
+    seriesId: string;
+    seriesTitle: string;
+    season: number;
+    episode: number;
+    nextId?: string;
+    prevId?: string;
+  };
+}
+
+export interface PublicEpisode {
+  id: string;
+  title: string;
+  season: number;
+  episode: number;
+  duration: number;
+  height: number;
+  thumbnailUrl?: string;
+  publishedAt: string;
+}
+
+export interface PublicSeries {
+  id: string;
+  title: string;
+  description?: string;
+  posterUrl?: string;
+  seasonCount: number;
+  episodeCount: number;
+  seasons: { number: number; episodes: PublicEpisode[] }[];
+  publishedAt: string;   // when the newest visible episode was published
 }
 
 export class VideoService {
@@ -78,6 +110,9 @@ export class VideoService {
     qualities?: unknown;
     autoPublish?: unknown;
     allowUpscale?: unknown;
+    seriesId?: unknown;
+    seasonNumber?: unknown;
+    episodeNumber?: unknown;
   }): Promise<{ videoId: string; uploadUrl: string; key: string; expiresIn: number }> {
     const sanitizedName = this.sanitizeFilename(params.filename);
     const contentTypeLower = params.contentType.toLowerCase();
@@ -98,6 +133,8 @@ export class VideoService {
     }
     const qualities = this.parseQualities(params.qualities);
     const title = this.parseTitle(params.title);
+    // Uploading straight into a series: check the slot before anything is created
+    const slot = params.seriesId ? await this.resolveEpisodeSlot(params, undefined, true) : undefined;
 
     // 2. Generate unique ID & keys
     const videoId =
@@ -114,7 +151,9 @@ export class VideoService {
       qualities,
       autoPublish: params.autoPublish === true,
       allowUpscale: params.allowUpscale === true,
+      ...(slot || {}),
     });
+    if (slot) await seriesService.ensureSeason(slot.seriesId, slot.seasonNumber);
 
     // 4. Generate S3 presigned URL
     const uploadUrl = await getStorageService().getSignedUrl(this.buckets.temp, key, 'upload');
@@ -369,10 +408,86 @@ export class VideoService {
     Logger.info(`Successfully deleted video ${id} and all associated resources`);
   }
 
+  // ─── Series / episodes ─────────────────────────────────────
+
+  // Checks a (series, season, episode) slot and returns it normalised. `autoNumber` picks the
+  // next free episode number when none is given (used when uploading into a season).
+  async resolveEpisodeSlot(
+    input: { seriesId?: unknown; seasonNumber?: unknown; episodeNumber?: unknown },
+    excludeVideoId?: string,
+    autoNumber = false
+  ): Promise<{ seriesId: string; seasonNumber: number; episodeNumber: number }> {
+    if (typeof input.seriesId !== 'string' || !input.seriesId) throw new HttpError('seriesId is required', 400, 'INVALID_SERIES');
+    await seriesService.require(input.seriesId);
+    const seasonNumber = parseSeasonNumber(input.seasonNumber ?? 1);
+    const siblings = (await dbService.listAll()).filter((v) => v.seriesId === input.seriesId && v.seasonNumber === seasonNumber && v.id !== excludeVideoId);
+    const episodeNumber = input.episodeNumber === undefined || input.episodeNumber === null || input.episodeNumber === ''
+      ? (autoNumber ? Math.max(0, ...siblings.map((v) => v.episodeNumber || 0)) + 1 : parseEpisodeNumber(input.episodeNumber))
+      : parseEpisodeNumber(input.episodeNumber);
+    const clash = siblings.find((v) => v.episodeNumber === episodeNumber);
+    if (clash) {
+      throw new HttpError(`Season ${seasonNumber}, episode ${episodeNumber} is already used by "${clash.title || clash.originalName}"`, 409, 'EPISODE_TAKEN');
+    }
+    return { seriesId: input.seriesId, seasonNumber, episodeNumber };
+  }
+
+  // Attach a video to a series, or move / renumber it inside one
+  async assignEpisode(id: string, input: { seriesId?: unknown; seasonNumber?: unknown; episodeNumber?: unknown }): Promise<VideoRecord> {
+    const video = await dbService.getVideo(id);
+    if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
+    const slot = await this.resolveEpisodeSlot(input, id);
+    const series = await seriesService.ensureSeason(slot.seriesId, slot.seasonNumber);
+    const updated = await dbService.updateVideo(id, slot);
+    await dbService.appendEvent(id, 'info', `Set as ${series.title}, season ${slot.seasonNumber}, episode ${slot.episodeNumber}`);
+    clearPublishedCache();
+    return updated;
+  }
+
+  // Take a video out of its series. It becomes a standalone draft so it can't suddenly appear as a movie.
+  async detachEpisode(id: string): Promise<VideoRecord> {
+    const video = await dbService.getVideo(id);
+    if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
+    if (!video.seriesId) return video;
+    const updated = await dbService.updateVideo(id, { seriesId: undefined, seasonNumber: undefined, episodeNumber: undefined, published: false });
+    await dbService.appendEvent(id, 'info', 'Removed from its series (now a standalone draft)');
+    clearPublishedCache();
+    return updated;
+  }
+
+  async episodesOf(seriesId: string): Promise<VideoRecord[]> {
+    return (await dbService.listAll())
+      .filter((v) => v.seriesId === seriesId)
+      .sort((a, b) => (a.seasonNumber! - b.seasonNumber!) || (a.episodeNumber! - b.episodeNumber!));
+  }
+
+  // Episodes as the admin sees them (CDN-applied thumbnails etc.), in order
+  async episodesForAdmin(seriesId: string): Promise<VideoRecord[]> {
+    return (await this.episodesOf(seriesId)).map((v) => this.applyCdnUrls(v));
+  }
+
+  async deleteSeries(id: string, deleteVideos: boolean): Promise<void> {
+    await seriesService.require(id);
+    for (const episode of await this.episodesOf(id)) {
+      if (deleteVideos) await this.deleteVideo(episode.id);
+      else await this.detachEpisode(episode.id);
+    }
+    await seriesService.delete(id);
+    clearPublishedCache();
+  }
+
   // ─── Public site ───────────────────────────────────────────
 
+  // A video is basic-public when it finished processing and was published
   isPublic(video: VideoRecord): boolean {
     return !!video.published && video.status === VideoStatus.COMPLETED && !!video.hlsPlaylistUrl;
+  }
+
+  // ...and visible when, if it is an episode, its series is published too
+  async isVisible(video: VideoRecord): Promise<boolean> {
+    if (!this.isPublic(video)) return false;
+    if (!video.seriesId) return true;
+    const series = await seriesService.get(video.seriesId);
+    return !!series && series.published;
   }
 
   toPublic(video: VideoRecord): PublicVideo {
@@ -391,18 +506,86 @@ export class VideoService {
     };
   }
 
-  // Published videos, newest first. Uses the same data as the admin app but exposes only PublicVideo.
+  private toPublicEpisode(video: VideoRecord): PublicEpisode {
+    const p = this.toPublic(video);
+    return {
+      id: p.id,
+      title: p.title,
+      season: video.seasonNumber ?? 1,
+      episode: video.episodeNumber ?? 0,
+      duration: p.duration,
+      height: p.height,
+      thumbnailUrl: p.thumbnailUrl,
+      publishedAt: p.publishedAt,
+    };
+  }
+
+  private buildPublicSeries(series: Series, episodes: VideoRecord[]): PublicSeries {
+    const ordered = [...episodes].sort((a, b) => (a.seasonNumber! - b.seasonNumber!) || (a.episodeNumber! - b.episodeNumber!));
+    const bySeason = new Map<number, PublicEpisode[]>();
+    for (const e of ordered) {
+      const list = bySeason.get(e.seasonNumber ?? 1) || [];
+      list.push(this.toPublicEpisode(e));
+      bySeason.set(e.seasonNumber ?? 1, list);
+    }
+    const seasons = [...bySeason.entries()].sort((a, b) => a[0] - b[0]).map(([number, eps]) => ({ number, episodes: eps }));
+    const latest = ordered.map((e) => this.toPublic(e).publishedAt).sort().pop() || series.publishedAt || series.createdAt;
+    return {
+      id: series.id,
+      title: series.title,
+      description: series.description,
+      posterUrl: ordered.length ? this.toPublic(ordered.find((e) => e.thumbnailUrl) || ordered[0]).thumbnailUrl : undefined,
+      seasonCount: seasons.length,
+      episodeCount: ordered.length,
+      seasons,
+      publishedAt: latest,
+    };
+  }
+
+  // Standalone published videos (movies), newest first. Episodes are listed through their series.
   async listPublished(): Promise<PublicVideo[]> {
     const all = await dbService.listAll();
     return all
-      .filter((v) => this.isPublic(v))
+      .filter((v) => !v.seriesId && this.isPublic(v))
       .map((v) => this.toPublic(v))
       .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 
+  // Published series that have at least one published, finished episode
+  async listPublicSeries(): Promise<PublicSeries[]> {
+    const [allSeries, videos] = await Promise.all([seriesService.list(), dbService.listAll()]);
+    return allSeries
+      .filter((s) => s.published)
+      .map((s) => this.buildPublicSeries(s, videos.filter((v) => v.seriesId === s.id && this.isPublic(v))))
+      .filter((s) => s.episodeCount > 0)
+      .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+  }
+
+  async getPublicSeries(id: string): Promise<PublicSeries | null> {
+    const series = await seriesService.get(id);
+    if (!series || !series.published) return null;
+    const episodes = (await this.episodesOf(id)).filter((v) => this.isPublic(v));
+    return episodes.length ? this.buildPublicSeries(series, episodes) : null;
+  }
+
   async getPublished(id: string): Promise<PublicVideo | null> {
     const video = await dbService.getVideo(id);
-    return video && this.isPublic(video) ? this.toPublic(video) : null;
+    if (!video || !(await this.isVisible(video))) return null;
+    const result = this.toPublic(video);
+    if (video.seriesId) {
+      const series = (await seriesService.get(video.seriesId))!;
+      const visible = (await this.episodesOf(video.seriesId)).filter((v) => this.isPublic(v));
+      const index = visible.findIndex((v) => v.id === id);
+      result.episode = {
+        seriesId: series.id,
+        seriesTitle: series.title,
+        season: video.seasonNumber ?? 1,
+        episode: video.episodeNumber ?? 0,
+        nextId: visible[index + 1]?.id,
+        prevId: visible[index - 1]?.id,
+      };
+    }
+    return result;
   }
 }
 

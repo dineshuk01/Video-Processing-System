@@ -11,7 +11,7 @@ router.post(
   '/initiate',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { filename, contentType, fileSize, title, qualities, autoPublish, allowUpscale } = req.body;
+      const { filename, contentType, fileSize, title, qualities, autoPublish, allowUpscale, seriesId, seasonNumber, episodeNumber } = req.body;
 
       if (!filename || typeof filename !== 'string') {
         return ResponseHandler.error(res, 'Invalid or missing parameter: filename', 400);
@@ -23,7 +23,7 @@ router.post(
         return ResponseHandler.error(res, 'Invalid or missing parameter: fileSize (must be a positive number)', 400);
       }
 
-      const result = await videoService.initiateUpload({ filename, contentType, fileSize, title, qualities, autoPublish, allowUpscale });
+      const result = await videoService.initiateUpload({ filename, contentType, fileSize, title, qualities, autoPublish, allowUpscale, seriesId, seasonNumber, episodeNumber });
       return ResponseHandler.success(res, result, 201);
     } catch (err: any) {
       next(err);

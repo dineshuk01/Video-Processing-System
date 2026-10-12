@@ -43,6 +43,9 @@ export interface CreateVideoParams {
   qualities?: number[];
   autoPublish?: boolean;
   allowUpscale?: boolean;
+  seriesId?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
 }
 
 export class DbService {
@@ -108,6 +111,9 @@ export class DbService {
         autoPublish: !!params.autoPublish,
         qualities: params.qualities,
         allowUpscale: !!params.allowUpscale,
+        seriesId: params.seriesId,
+        seasonNumber: params.seasonNumber,
+        episodeNumber: params.episodeNumber,
         attempts: 0,
         events: [{ at: now, level: 'info', message: 'Upload started' }],
         progress: 0,

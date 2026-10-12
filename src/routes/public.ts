@@ -17,6 +17,28 @@ router.get('/videos', async (req: Request, res: Response, next: NextFunction) =>
   }
 });
 
+// Published series (with all their published episodes, grouped by season)
+router.get('/series', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const series = await videoService.listPublicSeries();
+    res.setHeader('Cache-Control', 'public, max-age=10');
+    return ResponseHandler.success(res, { series, total: series.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/series/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const series = await videoService.getPublicSeries(req.params.id);
+    if (!series) return ResponseHandler.error(res, 'Series not found', 404, 'NOT_FOUND');
+    res.setHeader('Cache-Control', 'public, max-age=10');
+    return ResponseHandler.success(res, series);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/videos/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const video = await videoService.getPublished(req.params.id);
