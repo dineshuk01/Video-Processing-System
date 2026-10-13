@@ -30,5 +30,9 @@ RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
 
-# The container entrypoint is the standalone transcoder task
+# The two front-end apps (user site and admin dashboard) served by the API process
+COPY web ./web
+
+# Default entrypoint is the standalone transcoder task (used for ECS). The API server and the
+# worker override it: node dist/index.js and node dist/worker.js.
 ENTRYPOINT ["node", "dist/transcoderTask.js"]

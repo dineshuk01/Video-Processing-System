@@ -47,14 +47,39 @@ output "ecs_cluster_arn" {
   value       = aws_ecs_cluster.main.arn
 }
 
-output "api_task_definition_arn" {
-  description = "ARN of the API server ECS task definition"
-  value       = aws_ecs_task_definition.api.arn
+output "transcoder_task_definition_arn" {
+  description = "ARN of the one-shot transcoder ECS task definition"
+  value       = aws_ecs_task_definition.transcoder.arn
 }
 
-output "worker_task_definition_arn" {
-  description = "ARN of the worker ECS task definition"
-  value       = aws_ecs_task_definition.worker.arn
+output "server_public_ip" {
+  description = "Address of the server. Open http://<this> (or point your domain at it)"
+  value       = aws_eip.server.public_ip
+}
+
+output "user_site_url" {
+  description = "Where the public streaming site is reached"
+  value       = local.user_url
+}
+
+output "admin_site_url" {
+  description = "Where the admin dashboard is reached"
+  value       = local.admin_url
+}
+
+output "dns_records_to_create" {
+  description = "If you manage DNS elsewhere: create A records pointing both domains at this address"
+  value       = aws_eip.server.public_ip
+}
+
+output "server_instance_id" {
+  description = "EC2 instance ID (open a shell with Session Manager in the AWS console)"
+  value       = aws_instance.server.id
+}
+
+output "dynamodb_table_name" {
+  description = "DynamoDB table holding video records"
+  value       = aws_dynamodb_table.videos.name
 }
 
 output "cdn_domain_name" {

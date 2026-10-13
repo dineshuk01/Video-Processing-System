@@ -4,7 +4,9 @@ import {
   GetObjectCommand, 
   PutObjectCommand, 
   HeadObjectCommand, 
-  DeleteObjectCommand 
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import * as fs from 'fs';
@@ -80,9 +82,33 @@ export class S3Storage implements StorageService {
     await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
   }
 
+  // Deletes every object under `prefix/` (a "directory"), in pages of up to 1000 keys
   async deleteDirectory(bucket: string, prefix: string): Promise<void> {
-    Logger.warn(`S3 deleteDirectory not fully implemented. Stub called for bucket: ${bucket}, prefix: ${prefix}`);
-    // A real implementation would list objects by prefix and delete them in batches
+    const dirPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+    let continuationToken: string | undefined;
+    let deleted = 0;
+
+    do {
+      const listed = await this.client.send(new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: dirPrefix,
+        ContinuationToken: continuationToken,
+      }));
+      const keys = (listed.Contents || []).map((o) => ({ Key: o.Key! }));
+      if (keys.length > 0) {
+        const result = await this.client.send(new DeleteObjectsCommand({
+          Bucket: bucket,
+          Delete: { Objects: keys, Quiet: true },
+        }));
+        if (result.Errors && result.Errors.length > 0) {
+          throw new Error(`Failed to delete ${result.Errors.length} object(s) under ${dirPrefix}: ${result.Errors[0].Message}`);
+        }
+        deleted += keys.length;
+      }
+      continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    Logger.info(`S3: deleted ${deleted} object(s) under ${bucket}/${dirPrefix}`);
   }
 
   async getObjectMetadata(bucket: string, key: string): Promise<{ size: number; contentType?: string }> {

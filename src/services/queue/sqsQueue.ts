@@ -1,5 +1,5 @@
-import { QueueMessage, QueueService } from './queueService';
-import { SQSClient, SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand } from '@aws-sdk/client-sqs';
+import { QueueMessage, QueueService, QueueStats } from './queueService';
+import { SQSClient, SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand, GetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 
 export class SqsQueue implements QueueService {
   private client: SQSClient;
@@ -10,11 +10,12 @@ export class SqsQueue implements QueueService {
     });
   }
 
-  async sendMessage(queueUrl: string, messageBody: any): Promise<string> {
+  async sendMessage(queueUrl: string, messageBody: any, delaySeconds = 0): Promise<string> {
     const bodyStr = typeof messageBody === 'string' ? messageBody : JSON.stringify(messageBody);
     const command = new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: bodyStr,
+      DelaySeconds: Math.min(900, Math.max(0, Math.round(delaySeconds))), // SQS allows at most 15 minutes
     });
     const response = await this.client.send(command);
     return response.MessageId || '';
@@ -34,6 +35,23 @@ export class SqsQueue implements QueueService {
       ReceiptHandle: msg.ReceiptHandle || '',
       Body: msg.Body || '',
     }));
+  }
+
+  async getStats(queueUrl: string): Promise<QueueStats> {
+    const response = await this.client.send(new GetQueueAttributesCommand({
+      QueueUrl: queueUrl,
+      AttributeNames: [
+        'ApproximateNumberOfMessages',
+        'ApproximateNumberOfMessagesNotVisible',
+        'ApproximateNumberOfMessagesDelayed',
+      ],
+    }));
+    const attrs = response.Attributes || {};
+    return {
+      waiting: parseInt(attrs.ApproximateNumberOfMessages || '0', 10),
+      inFlight: parseInt(attrs.ApproximateNumberOfMessagesNotVisible || '0', 10),
+      delayed: parseInt(attrs.ApproximateNumberOfMessagesDelayed || '0', 10),
+    };
   }
 
   async deleteMessage(queueUrl: string, receiptHandle: string): Promise<void> {

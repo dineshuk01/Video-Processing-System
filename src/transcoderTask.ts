@@ -6,10 +6,19 @@ import * as dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-import { VideoStatus, VideoMetadata } from './types';
+import { VideoStatus, VideoMetadata, AudioTrack, TextTrack } from './types';
+import { resolveLanguage, trackLabel } from './utils/languages';
 import { dbService } from './services/db/dbService';
 import { getStorageService } from './services/storage/storageService';
 import { Logger } from './utils/logger';
+
+// Processing log lines shown to admins. A logging failure must never fail the transcode.
+const log = (level: 'info' | 'warn' | 'error', message: string) =>
+  dbService.appendEvent(videoId, level, message).catch((err) => Logger.warn('Could not write job log', err.message));
+
+// Base for media URLs served by this app in local mode. Empty means relative URLs, which
+// work from any host. Set PUBLIC_BASE_URL only if the site is served from another origin.
+const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 
 // 1. Retrieve & Validate Task Parameters
 const videoId = process.env.VIDEO_ID!;
@@ -61,20 +70,57 @@ interface HlsVariant {
   bandwidth: number;
 }
 
+// videoBitrate is the peak a rendition may reach, not a target: the encoder aims for constant quality (CRF)
+// and only spends bits where the picture needs them, so detailed scenes keep their sharpness.
 const HLS_VARIANTS: HlsVariant[] = [
-  { label: '360p',  width: 640,  height: 360,  videoBitrate: '400k',  audioBitrate: '64k',  bandwidth: 400000 },
-  { label: '480p',  width: 854,  height: 480,  videoBitrate: '800k',  audioBitrate: '96k',  bandwidth: 800000 },
-  { label: '720p',  width: 1280, height: 720,  videoBitrate: '2500k', audioBitrate: '128k', bandwidth: 2500000 },
-  { label: '1080p', width: 1920, height: 1080, videoBitrate: '4500k', audioBitrate: '128k', bandwidth: 4500000 },
+  { label: '360p',  width: 640,  height: 360,  videoBitrate: '1200k',  audioBitrate: '96k',  bandwidth: 1200000 },
+  { label: '480p',  width: 854,  height: 480,  videoBitrate: '2500k',  audioBitrate: '128k', bandwidth: 2500000 },
+  { label: '720p',  width: 1280, height: 720,  videoBitrate: '6000k',  audioBitrate: '192k', bandwidth: 6000000 },
+  { label: '1080p', width: 1920, height: 1080, videoBitrate: '12000k', audioBitrate: '192k', bandwidth: 12000000 },
 ];
 
-function runFfmpeg(args: string[]): Promise<void> {
+// An admin paused or deleted the video: stop quietly instead of failing or retrying
+class AbortedError extends Error {}
+const ABORT_EXIT_CODE = 3;
+let started = false; // true once this task has marked the video PROCESSING
+
+async function stopRequested(): Promise<boolean> {
+  const record = await dbService.getVideo(videoId).catch(() => undefined);
+  if (record === undefined) return false;                  // database hiccup: keep going
+  if (record === null) return true;                        // the video was deleted
+  if (record.status === VideoStatus.PAUSED) return true;   // paused
+  // Reset to something else (e.g. paused, then resumed): a newer run owns the video now
+  return started && record.status !== VideoStatus.PROCESSING;
+}
+
+async function assertNotStopped() {
+  if (await stopRequested()) throw new AbortedError('Stopped by an admin');
+}
+
+// Presets trade speed for file size at the same quality. 'veryfast' is a good default for streaming.
+const PRESETS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow'];
+// Lower CRF = higher quality (18 is visually near-lossless; 23 is x264's default). Override with FFMPEG_CRF.
+const crf = String(Math.min(30, Math.max(14, parseInt(process.env.FFMPEG_CRF || '', 10) || 17)));
+const x264Preset = PRESETS.includes(process.env.FFMPEG_PRESET || '') ? process.env.FFMPEG_PRESET! : 'veryfast';
+
+// `onTime` receives how many seconds of the video have been encoded so far (needs `-progress pipe:1`)
+function runFfmpeg(args: string[], onTime?: (seconds: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     Logger.info(`FFmpeg: Executing command -> ${ffmpegBin} ${args.join(' ')}`);
     const proc = spawn(ffmpegBin, args);
     let stderr = '';
+    let stopped = false;
+
+    // Look for a pause/delete request while FFmpeg runs and kill it straight away
+    const watcher = setInterval(async () => {
+      if (!stopped && (await stopRequested())) {
+        stopped = true;
+        proc.kill('SIGKILL');
+      }
+    }, 1500);
 
     proc.on('error', (err) => {
+      clearInterval(watcher);
       reject(new Error(`Failed to start FFmpeg: ${err.message}`));
     });
 
@@ -82,8 +128,25 @@ function runFfmpeg(args: string[]): Promise<void> {
       stderr += data.toString();
     });
 
+    // -progress prints "key=value" lines; out_time_us is the encoded position in microseconds
+    let outBuffer = '';
+    if (onTime) {
+      proc.stdout.on('data', (data) => {
+        outBuffer += data.toString();
+        const lines = outBuffer.split('\n');
+        outBuffer = lines.pop() || '';
+        for (const line of lines) {
+          const match = /^out_time_(?:us|ms)=(\d+)/.exec(line.trim());
+          if (match) onTime(Number(match[1]) / 1e6);
+        }
+      });
+    }
+
     proc.on('close', (code) => {
-      if (code === 0) {
+      clearInterval(watcher);
+      if (stopped) {
+        reject(new AbortedError('Stopped by an admin'));
+      } else if (code === 0) {
         resolve();
       } else {
         reject(
@@ -91,6 +154,65 @@ function runFfmpeg(args: string[]): Promise<void> {
         );
       }
     });
+  });
+}
+
+// Time of the first audio packet, or null when there is no audio. Some files declare audio from 0 s
+// but only carry it from much later (e.g. an intro with no sound track); the container does not say.
+function probeAudioStart(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffprobeBin, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', '-read_intervals', '%+#1', filePath]);
+    let out = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.on('error', () => resolve(null));
+    proc.on('close', () => {
+      const t = parseFloat(out.split(/\r?\n/)[0]);
+      resolve(Number.isFinite(t) ? t : null);
+    });
+  });
+}
+
+// Audio and subtitle tracks in the upload. Files from many sources carry several audio languages
+// (e.g. Hindi + English) and subtitle streams; the first audio stream is not always the one people want.
+interface SourceStream { index: number; codec: string; language: string; title: string; isDefault: boolean }
+
+// Text subtitles can be turned into WebVTT; picture-based ones (Blu-ray PGS, DVD) cannot
+const TEXT_SUBTITLE_CODECS = ['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'];
+
+function probeStreams(filePath: string): Promise<{ audio: SourceStream[]; subs: SourceStream[]; pictureSubs: number }> {
+  return new Promise((resolve) => {
+    const empty = { audio: [], subs: [], pictureSubs: 0 };
+    const proc = spawn(ffprobeBin, ['-v', 'quiet', '-print_format', 'json', '-show_streams', filePath]);
+    let out = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.on('error', () => resolve(empty));
+    proc.on('close', () => {
+      try {
+        const streams: any[] = JSON.parse(out).streams || [];
+        const info = (s: any): SourceStream => ({
+          index: s.index,
+          codec: s.codec_name || '',
+          language: s.tags?.language || '',
+          title: s.tags?.title || '',
+          isDefault: s.disposition?.default === 1,
+        });
+        const subStreams = streams.filter((s) => s.codec_type === 'subtitle');
+        const subs = subStreams.filter((s) => TEXT_SUBTITLE_CODECS.includes(s.codec_name)).map(info);
+        resolve({ audio: streams.filter((s) => s.codec_type === 'audio').map(info), subs, pictureSubs: subStreams.length - subs.length });
+      } catch {
+        resolve(empty);
+      }
+    });
+  });
+}
+
+// Menu names must differ: "Hindi", "Hindi" becomes "Hindi", "Hindi 2"
+function uniqueLabels(labels: string[]): string[] {
+  const seen = new Map<string, number>();
+  return labels.map((l) => {
+    const n = (seen.get(l) || 0) + 1;
+    seen.set(l, n);
+    return n === 1 ? l : `${l} ${n}`;
   });
 }
 
@@ -175,11 +297,21 @@ async function executeTranscoding() {
     const storage = getStorageService();
     await storage.downloadFile(inputBucket, inputKey, inputFilePath);
 
+    // Stop here if the video was paused or deleted while the source was downloading
+    await assertNotStopped();
+
     // Update state to PROCESSING - 5%
     await dbService.updateVideo(videoId, {
       status: VideoStatus.PROCESSING,
       progress: 5,
     });
+    started = true;
+
+    await log('info', 'Source file downloaded');
+
+    // Admin settings chosen for this video (quality ladder, auto-publish)
+    const record = await dbService.getVideo(videoId);
+    const selectedQualities = record?.qualities && record.qualities.length > 0 ? record.qualities : null;
 
     // Step B2: Probe source video with FFprobe
     let metadata: VideoMetadata;
@@ -187,22 +319,71 @@ async function executeTranscoding() {
       metadata = await probeVideo(inputFilePath);
     } catch (probeErr: any) {
       Logger.warn(`FFprobe analysis failed, using defaults: ${probeErr.message}`);
+      await log('warn', `Could not read source details, using defaults: ${probeErr.message}`);
       metadata = { width: 1920, height: 1080, duration: 0, codec: 'unknown', fps: 30 };
     }
 
     // Save metadata to DB
     await dbService.updateVideo(videoId, { metadata, progress: 8 });
+    await log('info', `Source: ${metadata.width}x${metadata.height}, ${metadata.codec}, ${metadata.fps} fps, ${metadata.duration.toFixed(1)}s`);
 
-    // Step C: Determine which HLS variants to generate (Smart Resolution Scaling)
-    const sourceHeight = metadata.height;
-    const eligibleVariants = HLS_VARIANTS.filter((v) => v.height <= sourceHeight);
-
-    if (eligibleVariants.length === 0) {
-      // Source is extremely small — generate at least 360p
-      eligibleVariants.push(HLS_VARIANTS[0]);
+    // If the audio starts late, the HLS segments before it would have no audio at all, which browsers
+    // cannot play ("bufferAppendError"). The encoder pads that stretch with silence instead (see -af below).
+    // Padding inside the main encode is not enough: the silence is produced late, in one burst, so the early
+    // segments still come out empty. Instead the audio is rebuilt first as its own gap-free track (fast, audio only).
+    const streams = await probeStreams(inputFilePath);
+    const audioStart = streams.audio.length < 2 ? await probeAudioStart(inputFilePath) : null;
+    let fixedAudioPath: string | null = null;
+    if (audioStart !== null && audioStart > 0.5 && streams.audio.length < 2) {
+      await log('warn', `The audio only starts ${audioStart.toFixed(1)} s into the video. Silence is added before it so the stream plays in every browser.`);
+      fixedAudioPath = path.join(tempDir, 'audio_padded.m4a');
+      await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-vn', '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-ac', '2', '-b:a', '192k', fixedAudioPath]);
     }
 
-    Logger.info(`Transcoder Task: Source resolution ${metadata.width}x${sourceHeight}. Generating ${eligibleVariants.length} HLS variant(s): ${eligibleVariants.map(v => v.label).join(', ')}`);
+    // Several audio languages: each becomes its own audio-only stream the player can switch between, and
+    // the video renditions carry no sound. Each track is rebuilt first (stereo AAC, silence in front of
+    // late audio), which also fixes tracks that start late.
+    const multiAudio = streams.audio.length >= 2;
+    const audioInputs: string[] = [];
+    let audioTracks: AudioTrack[] | undefined;
+    if (multiAudio) {
+      const labels = uniqueLabels(streams.audio.map((a, i) => trackLabel(a.title, a.language, `Audio ${i + 1}`)));
+      audioTracks = streams.audio.map((a, i) => ({ id: `a${i}`, language: resolveLanguage(a.language).code, label: labels[i] }));
+      await log('info', `Found ${audioTracks.length} audio tracks: ${labels.join(', ')}`);
+      for (let i = 0; i < streams.audio.length; i++) {
+        await assertNotStopped();
+        const out = path.join(tempDir, `audio_${i}.m4a`);
+        await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-vn', '-map', `0:${streams.audio[i].index}`, '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-ac', '2', '-b:a', '160k', out]);
+        audioInputs.push(out);
+      }
+    }
+
+    // Step C: Decide which renditions to make.
+    const srcW = metadata.width || 1920;
+    const srcH = metadata.height || 1080;
+    const allowUpscale = !!record?.allowUpscale;
+
+    // "720p" is a size class, not a literal height: a 1280-wide widescreen movie is 720p even though
+    // it is only 536 px tall. A class is reached when the source is at least that wide or that tall.
+    const reached = (v: HlsVariant) => srcW >= v.width * 0.98 || srcH >= v.height * 0.98;
+    const wanted = HLS_VARIANTS.filter((v) => !selectedQualities || selectedQualities.includes(v.height));
+    const eligibleVariants = wanted.filter((v) => allowUpscale || reached(v));
+    const skipped = wanted.filter((v) => !eligibleVariants.includes(v));
+
+    if (eligibleVariants.length === 0) {
+      // Nothing selected fits the source (e.g. only 1080p chosen for a 480p video):
+      // fall back to the smallest selected rendition, or 360p, so the video is still playable
+      const fallback = selectedQualities
+        ? HLS_VARIANTS.find((v) => v.height === Math.min(...selectedQualities)) || HLS_VARIANTS[0]
+        : HLS_VARIANTS[0];
+      eligibleVariants.push(fallback);
+      await log('warn', `None of the selected qualities fit a ${srcW}x${srcH} source. Generating ${fallback.label} instead.`);
+    } else if (skipped.length > 0) {
+      await log('warn', `Skipped ${skipped.map((v) => v.label).join(', ')}: larger than the ${srcW}x${srcH} source. Turn on "Allow upscaling" in the video settings to create them anyway.`);
+    }
+    await log('info', `Generating renditions: ${eligibleVariants.map((v) => v.label).join(', ')}`);
+
+    Logger.info(`Transcoder Task: Source resolution ${srcW}x${srcH}. Generating ${eligibleVariants.length} HLS variant(s): ${eligibleVariants.map(v => v.label).join(', ')}`);
 
     const gopSize = Math.round((metadata.fps || 30) * 6);
     const watermarkPath = path.join(localDataDir, 'watermark.png');
@@ -211,42 +392,99 @@ async function executeTranscoding() {
       Logger.info(`Transcoder Task: Watermark image found at ${watermarkPath}. Overlaying on video.`);
     }
 
-    // Step D: Transcode eligible HLS Resolutions
-    const progressPerVariant = 70 / eligibleVariants.length; // Distribute 10% → 80% across variants
-    let currentProgress = 10;
+    // Output size: fit the rendition's 16:9 box while keeping the source's aspect ratio (a 2.39:1 movie
+    // must not be stretched to 16:9), never above the source unless upscaling was asked for.
+    // H.264 needs even dimensions.
+    const aspect = srcW / srcH;
+    const even = (x: number) => Math.max(2, Math.round(x / 2) * 2);
+    const sizeOf = (v: HlsVariant) => {
+      let w = v.width;
+      let h = w / aspect;
+      if (h > v.height) { h = v.height; w = h * aspect; }                  // taller than the box: fit by height
+      if (!allowUpscale && (w > srcW || h > srcH)) { w = srcW; h = srcH; } // keep native size, no upscaling
+      return { w: even(w), h: even(h), upscaled: w > srcW || h > srcH };
+    };
+    const sizes = new Map(eligibleVariants.map((v) => [v.label, sizeOf(v)] as const));
 
-    for (const variant of eligibleVariants) {
-      Logger.info(`Transcoder Task: Generating ${variant.label} HLS playlist...`);
-      const ffmpegArgs = ['-y', '-i', inputFilePath];
-      
-      if (hasWatermark) {
-        ffmpegArgs.push('-i', watermarkPath);
-        ffmpegArgs.push(
-          '-filter_complex',
-          `[1:v]scale=64:-1[watermark];[0:v]scale=${variant.width}:${variant.height}[video];[video][watermark]overlay=W-w-10:10`
-        );
-      } else {
-        ffmpegArgs.push('-vf', `scale=w=${variant.width}:h=${variant.height}`);
-      }
+    // Step D: Transcode every rendition in a single FFmpeg run. The source is decoded once and
+    // split into one scaled copy per rendition; decoding (especially HEVC) is a large share of the work.
+    const n = eligibleVariants.length;
+    const ffmpegArgs = ['-y', '-nostdin', '-i', inputFilePath];
+    if (hasWatermark) ffmpegArgs.push('-i', watermarkPath);
+    if (fixedAudioPath) ffmpegArgs.push('-i', fixedAudioPath);
+    const audioMap = fixedAudioPath ? `${hasWatermark ? 2 : 1}:a:0` : '0:a:0?';
+    const firstExtraInput = 1 + (hasWatermark ? 1 : 0) + (fixedAudioPath ? 1 : 0);
+    for (const a of audioInputs) ffmpegArgs.push('-i', a);
 
+    // Lanczos keeps upscaled frames as sharp as scaling can make them
+    const scaleFilter = (v: HlsVariant) => {
+      const size = sizes.get(v.label)!;
+      return `scale=${size.w}:${size.h}${size.upscaled ? ':flags=lanczos' : ''}`;
+    };
+    const names = (prefix: string) => eligibleVariants.map((_, i) => `[${prefix}${i}]`).join('');
+    let graph = `[0:v]split=${n}${names('v')}`;
+    if (hasWatermark) graph += `;[1:v]scale=64:-1,split=${n}${names('w')}`;
+    eligibleVariants.forEach((v, i) => {
+      graph += hasWatermark
+        ? `;[v${i}]${scaleFilter(v)}[s${i}];[s${i}][w${i}]overlay=W-w-10:10[o${i}]`
+        : `;[v${i}]${scaleFilter(v)}[o${i}]`;
+    });
+    ffmpegArgs.push('-filter_complex', graph, '-progress', 'pipe:1', '-nostats');
+
+    eligibleVariants.forEach((v, i) => {
       ffmpegArgs.push(
+        '-map', `[o${i}]`, ...(multiAudio ? ['-an'] : ['-map', audioMap]),
         '-c:v', 'libx264',
-        '-b:v', variant.videoBitrate,
-        '-c:a', 'aac',
-        '-b:a', variant.audioBitrate,
+        '-preset', x264Preset,
+        '-pix_fmt', 'yuv420p', // 8-bit: browsers cannot play 10-bit H.264 ("High 10"), which 10-bit sources produce by default
+        '-crf', crf,
+        '-maxrate', v.videoBitrate,
+        '-bufsize', `${parseInt(v.videoBitrate, 10) * 2}k`,
+        ...(multiAudio ? [] : ['-c:a', 'aac', '-ac', '2', '-b:a', v.audioBitrate]),
         '-g', gopSize.toString(),
         '-keyint_min', gopSize.toString(),
         '-sc_threshold', '0',
         '-hls_time', '6',
         '-hls_playlist_type', 'vod',
-        '-hls_segment_filename', path.join(outputDir, `output_${variant.label}_%03d.ts`),
-        path.join(outputDir, `playlist_${variant.label}.m3u8`)
+        '-hls_segment_filename', path.join(outputDir, `output_${v.label}_%03d.ts`),
+        path.join(outputDir, `playlist_${v.label}.m3u8`)
       );
+    });
 
-      await runFfmpeg(ffmpegArgs);
-      currentProgress += progressPerVariant;
-      await dbService.updateVideo(videoId, { progress: Math.round(currentProgress) });
-    }
+    // One audio-only stream per language (copied from the rebuilt tracks, so no second encode)
+    audioInputs.forEach((_, i) => {
+      ffmpegArgs.push(
+        '-map', `${firstExtraInput + i}:a:0`,
+        '-c:a', 'copy',
+        '-hls_time', '6',
+        '-hls_playlist_type', 'vod',
+        '-hls_segment_filename', path.join(outputDir, `audio_${i}_%03d.ts`),
+        path.join(outputDir, `audio_${i}.m3u8`)
+      );
+    });
+
+    // Progress follows the encoded position, so long videos visibly advance (10% -> 80%)
+    let lastProgressWrite = 0;
+    let lastProgress = 10;
+    let writingProgress = false;
+    const onTime = (seconds: number) => {
+      if (!metadata.duration || writingProgress || Date.now() - lastProgressWrite < 3000) return;
+      const pct = Math.min(80, Math.round(10 + 70 * Math.min(1, seconds / metadata.duration)));
+      if (pct === lastProgress) return;
+      writingProgress = true;
+      lastProgressWrite = Date.now();
+      lastProgress = pct;
+      dbService.updateVideo(videoId, { progress: pct })
+        .catch(() => { /* a missed progress tick is harmless */ })
+        .finally(() => { writingProgress = false; });
+    };
+
+    Logger.info(`Transcoder Task: Encoding ${n} rendition(s) in one pass (preset ${x264Preset})...`);
+    await runFfmpeg(ffmpegArgs, onTime);
+    await log('info', `Encoded ${eligibleVariants.map((v) => v.label).join(', ')} (preset ${x264Preset})`);
+    await dbService.updateVideo(videoId, { progress: 80 });
+
+    await assertNotStopped();
 
     // Step E: Extract Thumbnail Poster Frame (progress +2%)
     Logger.info(`Transcoder Task: Extracting poster frame thumbnail for video ${videoId}...`);
@@ -274,9 +512,32 @@ async function executeTranscoding() {
     }
     await dbService.updateVideo(videoId, { progress: 83 });
 
-    // Step E2: Write WebVTT Subtitle Track
-    Logger.info(`Transcoder Task: Generating subtitle track files...`);
+    // Step E1: Subtitles inside the upload (text kinds only) become WebVTT files next to the video
+    const embedded: TextTrack[] = [];
+    if (streams.subs.length > 0) {
+      const labels = uniqueLabels(streams.subs.map((x, i) => trackLabel(x.title, x.language, `Subtitles ${i + 1}`)));
+      for (let i = 0; i < streams.subs.length; i++) {
+        const file = `subs_${i}.vtt`;
+        try {
+          await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-map', `0:${streams.subs[i].index}`, '-c:s', 'webvtt', path.join(outputDir, file)]);
+          embedded.push({ id: `e${i}`, language: resolveLanguage(streams.subs[i].language).code, label: labels[i], key: `${outputKeyPrefix}/${file}`, source: 'embedded' });
+        } catch (subErr: any) {
+          if (subErr instanceof AbortedError) throw subErr;
+          await log('warn', `Could not read subtitle track ${i + 1}: ${subErr.message.slice(0, 120)}`);
+        }
+      }
+      if (embedded.length) await log('info', `Extracted ${embedded.length} subtitle track(s): ${embedded.map((t) => t.label).join(', ')}`);
+    }
+    if (streams.pictureSubs > 0) {
+      await log('warn', `${streams.pictureSubs} picture-based subtitle track(s) were skipped: they cannot be converted to text. Upload an .srt or .vtt instead.`);
+    }
+
+    // Step E2: Optional placeholder WebVTT track. Off by default: these are sample lines, not real
+    // captions, so they must not appear on a public site unless someone deliberately turns them on.
     const subtitleFileName = 'subtitles_en.vtt';
+    const subtitlePath = path.join(outputDir, subtitleFileName);
+    if (process.env.ENABLE_PLACEHOLDER_CAPTIONS === 'true') {
+    Logger.info(`Transcoder Task: Generating subtitle track files...`);
     const subtitleContent = `WEBVTT
 
 00:00:00.000 --> 00:00:02.500
@@ -288,7 +549,6 @@ This adaptive stream has been aligned with standard GOP keyframes.
 00:00:05.500 --> 00:00:08.000
 Enjoy smooth resolution switching and clear captions!
 `;
-    const subtitlePath = path.join(outputDir, subtitleFileName);
     await fs.promises.writeFile(subtitlePath, subtitleContent, 'utf8');
 
     // Write subtitle HLS playlist (Hls.js requires subtitle tracks as .m3u8, not raw .vtt)
@@ -296,6 +556,7 @@ Enjoy smooth resolution switching and clear captions!
     const videoDuration = metadata.duration || 10;
     const subtitlePlaylistContent = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(videoDuration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${videoDuration.toFixed(6)},\n${subtitleFileName}\n#EXT-X-ENDLIST\n`;
     await fs.promises.writeFile(path.join(outputDir, subtitlePlaylistName), subtitlePlaylistContent, 'utf8');
+    }
 
     await dbService.updateVideo(videoId, { progress: 86 });
 
@@ -303,8 +564,15 @@ Enjoy smooth resolution switching and clear captions!
     Logger.info(`Transcoder Task: Writing master HLS playlist manifest...`);
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
     
+    if (audioTracks) {
+      const defaultIndex = Math.max(0, streams.audio.findIndex((a) => a.isDefault));
+      audioTracks.forEach((t, i) => {
+        const name = t.label.replace(/"/g, "'");
+        masterPlaylistContent += `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="${name}"${t.language !== 'und' ? `,LANGUAGE="${t.language}"` : ''},DEFAULT=${i === defaultIndex ? 'YES' : 'NO'},AUTOSELECT=YES,CHANNELS="2",URI="audio_${i}.m3u8"\n`;
+      });
+    }
     for (const variant of eligibleVariants) {
-      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${variant.width}x${variant.height}\n`;
+      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${sizes.get(variant.label)!.w}x${sizes.get(variant.label)!.h}${audioTracks ? ',AUDIO="aud"' : ''}\n`;
       masterPlaylistContent += `playlist_${variant.label}.m3u8\n`;
     }
 
@@ -317,19 +585,19 @@ Enjoy smooth resolution switching and clear captions!
     const files = await fs.promises.readdir(outputDir);
     
     for (const file of files) {
+      await assertNotStopped();
       const filePath = path.join(outputDir, file);
       const fileKey = `${outputKeyPrefix}/${file}`;
       await storage.uploadFile(outputBucket, fileKey, filePath);
     }
     await dbService.updateVideo(videoId, { progress: 97 });
+    await log('info', `Uploaded ${files.length} files to storage`);
 
     // Step H: Cleanup Local Temp directories & set COMPLETED
     Logger.info('Transcoder Task: Cleaning up local temporary transcode files...');
     if (fs.existsSync(tempDir)) {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
-
-    const port = process.env.PORT || 5000;
 
     // Build HLS playlist URL (CDN or local)
     let hlsPlaylistUrl: string;
@@ -338,7 +606,7 @@ Enjoy smooth resolution switching and clear captions!
     } else if (process.env.PROVIDER === 'aws') {
       hlsPlaylistUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/master.m3u8`;
     } else {
-      hlsPlaylistUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/master.m3u8`;
+      hlsPlaylistUrl = `${publicBase}/api/local-s3/${outputBucket}/${outputKeyPrefix}/master.m3u8`;
     }
 
     // Build poster thumbnail URL
@@ -349,7 +617,7 @@ Enjoy smooth resolution switching and clear captions!
       } else if (process.env.PROVIDER === 'aws') {
         thumbnailUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/poster.jpg`;
       } else {
-        thumbnailUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/poster.jpg`;
+        thumbnailUrl = `${publicBase}/api/local-s3/${outputBucket}/${outputKeyPrefix}/poster.jpg`;
       }
     }
 
@@ -361,20 +629,47 @@ Enjoy smooth resolution switching and clear captions!
       } else if (process.env.PROVIDER === 'aws') {
         subtitleUrl = `https://${outputBucket}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${outputKeyPrefix}/${subtitleFileName}`;
       } else {
-        subtitleUrl = `http://localhost:${port}/api/local-s3/${outputBucket}/${outputKeyPrefix}/${subtitleFileName}`;
+        subtitleUrl = `${publicBase}/api/local-s3/${outputBucket}/${outputKeyPrefix}/${subtitleFileName}`;
       }
     }
+
+    // A pause/delete that arrived during the upload must not be overwritten by "completed"
+    await assertNotStopped();
+
+    // Subtitles an admin uploaded are kept; the ones found in the file are replaced by this run's
+    const latest = await dbService.getVideo(videoId);
+    const textTracks = [...(latest?.textTracks || []).filter((t) => t.source === 'upload'), ...embedded];
 
     await dbService.updateVideo(videoId, {
       status: VideoStatus.COMPLETED,
       progress: 100,
+      audioTracks,
+      textTracks: textTracks.length ? textTracks : undefined,
       hlsPlaylistUrl,
       thumbnailUrl,
       subtitleUrl,
+      renditions: eligibleVariants.map((v) => v.label),
+      ...(record?.autoPublish ? { published: true } : {}),
     });
+    await log('info', 'Processing complete');
+    if (record?.autoPublish) await log('info', 'Published to the public site (auto-publish)');
     Logger.info(`Transcoder Task: Video ${videoId} successfully transcoded and uploaded!`);
   } catch (err: any) {
+    if (err instanceof AbortedError) {
+      Logger.info(`Transcoder Task: Video ${videoId} was paused or deleted. Stopping.`);
+      try {
+        if (fs.existsSync(tempDir)) await fs.promises.rm(tempDir, { recursive: true, force: true });
+        // Remove any partial output that was already uploaded
+        await getStorageService().deleteDirectory(outputBucket, outputKeyPrefix);
+      } catch (cleanupErr: any) {
+        Logger.warn('Could not fully clean up after stopping', cleanupErr.message);
+      }
+      await log('warn', 'Processing stopped by an admin');
+      process.exit(ABORT_EXIT_CODE);
+    }
+
     Logger.error(`Transcoder Task: Failed to transcode video ${videoId}`, err.message);
+    await log('error', `Transcoding error: ${err.message}`);
 
     // Try to cleanup temp folders
     try {

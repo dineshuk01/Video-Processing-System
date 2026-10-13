@@ -3,7 +3,10 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 
-const API_URL = 'http://localhost:5000/api';
+// The upload/processing API lives behind the admin sign-in. Set ADMIN_API_KEY to the server's key.
+const BASE_URL = process.env.API_BASE_URL || 'http://localhost:5000';
+const API_URL = `${BASE_URL}/api/admin`;
+const ADMIN_HEADERS: Record<string, string> = process.env.ADMIN_API_KEY ? { 'x-admin-key': process.env.ADMIN_API_KEY } : {};
 const TEMP_DIR = path.resolve(__dirname, '../../data/e2e-temp');
 
 async function runE2ETest() {
@@ -29,7 +32,7 @@ async function runE2ETest() {
     console.log('2️⃣  Initiating upload...');
     const initRes = await fetch(`${API_URL}/upload/initiate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...ADMIN_HEADERS },
       body: JSON.stringify({
         filename: 'e2e_test_video.mp4',
         contentType: 'video/mp4',
@@ -46,9 +49,10 @@ async function runE2ETest() {
     
     // Read file into buffer for fetch (since fetch in Node handles buffers well)
     const fileBuffer = fs.readFileSync(testVideoPath);
-    const uploadRes = await fetch(uploadUrl, {
+    const uploadRes = await fetch(new URL(uploadUrl, BASE_URL).href, {
       method: 'PUT',
       headers: {
+        ...ADMIN_HEADERS,
         'Content-Type': 'video/mp4',
         'Content-Length': fileSize.toString(),
       },
@@ -61,7 +65,7 @@ async function runE2ETest() {
     console.log('4️⃣  Completing upload...');
     const completeRes = await fetch(`${API_URL}/upload/complete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...ADMIN_HEADERS },
       body: JSON.stringify({ videoId })
     });
     const completeData = await completeRes.json() as any;
@@ -74,7 +78,7 @@ async function runE2ETest() {
     let attempts = 0;
     let finalVideoRecord: any = null;
     while (!isComplete && attempts < 30) {
-      const statusRes = await fetch(`${API_URL}/videos/${videoId}`);
+      const statusRes = await fetch(`${API_URL}/videos/${videoId}`, { headers: ADMIN_HEADERS });
       const statusData = await statusRes.json() as any;
       if (!statusRes.ok) throw new Error(`Status check failed: ${JSON.stringify(statusData)}`);
       
@@ -161,8 +165,8 @@ async function runE2ETest() {
     console.log('✅ HLS playlist variants and poster image match the probed source resolution exactly!\n');
 
     // 8. Delete Video & Cleanup
-    console.log(`7️⃣  Cleaning up (DELETE /api/videos/${videoId})...`);
-    const delRes = await fetch(`${API_URL}/videos/${videoId}`, { method: 'DELETE' });
+    console.log(`7️⃣  Cleaning up (DELETE /api/admin/videos/${videoId})...`);
+    const delRes = await fetch(`${API_URL}/videos/${videoId}`, { method: 'DELETE', headers: ADMIN_HEADERS });
     const delData = await delRes.json() as any;
     if (!delRes.ok) throw new Error(`Delete failed: ${JSON.stringify(delData)}`);
     

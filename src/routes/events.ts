@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { dbService } from '../services/db/dbService';
 import { Logger } from '../utils/logger';
+import { withoutEvents } from '../utils/videoView';
+import { videoService } from '../services/video/videoService';
 
 const router = Router();
 
@@ -31,10 +33,10 @@ async function startPolling() {
       const videos = result.videos;
 
       for (const video of videos) {
-        const key = `${video.status}:${video.progress}`;
+        const key = [video.status, video.progress, video.published, video.title, video.seriesId, video.seasonNumber, video.episodeNumber, (video.renditions || []).join(), video.customThumbnailKey].join(':');
         if (lastSnapshot[video.id] !== key) {
           lastSnapshot[video.id] = key;
-          broadcast('video-update', video);
+          broadcast('video-update', withoutEvents(videoService.present(video)));
         }
       }
     } catch (err: any) {
@@ -59,7 +61,7 @@ router.get('/', (req: Request, res: Response) => {
 
   // Send initial snapshot of all videos immediately on connect
   dbService.listVideos(1, 100).then((result) => {
-    const payload = `event: initial-load\ndata: ${JSON.stringify(result.videos)}\n\n`;
+    const payload = `event: initial-load\ndata: ${JSON.stringify(result.videos.map((v) => withoutEvents(videoService.present(v))))}\n\n`;
     res.write(payload);
   }).catch(() => {});
 

@@ -3,8 +3,29 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { ResponseHandler } from '../utils/responseHandler';
+import { isAdminRequest } from '../middleware/adminAuth';
+import { dbService } from '../services/db/dbService';
+import { videoService } from '../services/video/videoService';
+import { seriesService } from '../services/series/seriesService';
+import { getPublishedCache, setPublishedCache } from '../services/video/publishedCache';
 
 const router = Router();
+
+async function isPublishedVideo(id: string): Promise<boolean> {
+  const cached = getPublishedCache(id);
+  if (cached !== undefined) return cached;
+  let ok: boolean;
+  if (id.startsWith('series_')) {
+    // A series poster is public while the series is published
+    const series = await seriesService.get(id.slice('series_'.length));
+    ok = !!series && series.published;
+  } else {
+    const video = await dbService.getVideo(id);
+    ok = !!video && (await videoService.isVisible(video));
+  }
+  setPublishedCache(id, ok);
+  return ok;
+}
 
 const maxUploadSizeBytes =
   parseInt(process.env.MAX_UPLOAD_SIZE_MB || '100', 10) * 1024 * 1024;
@@ -28,6 +49,12 @@ router.put(
           'Mock S3 endpoint is only available when PROVIDER=local',
           403
         );
+      }
+
+      // Only admins upload (the local stand-in for a presigned S3 PUT)
+      if (!isAdminRequest(req)) {
+        req.resume();
+        return ResponseHandler.error(res, 'Admin sign-in required', 401, 'UNAUTHORIZED');
       }
 
       const bucket = req.params.bucket;
@@ -152,6 +179,16 @@ router.get(
         return ResponseHandler.error(res, 'Directory traversal detected', 400);
       }
 
+      // The public may only read the processed output of published videos. Raw uploads and
+      // unpublished videos are admin-only, and look "not found" to everyone else.
+      if (!isAdminRequest(req)) {
+        const publicBucket = process.env.LOCAL_S3_PUBLIC_BUCKET;
+        const match = bucket === publicBucket ? /^(?:processed|thumbnails|subtitles)\/([^/]+)\//.exec(key) : null;
+        if (!match || !(await isPublishedVideo(match[1]))) {
+          return ResponseHandler.error(res, `Object ${key} not found in bucket ${bucket}`, 404);
+        }
+      }
+
       if (!fs.existsSync(filePath)) {
         return ResponseHandler.error(res, `Object ${key} not found in bucket ${bucket}`, 404);
       }
@@ -171,7 +208,9 @@ router.get(
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Headers', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+      // Reprocessing rewrites files under the same names, so browsers must re-check them (a cheap 304 when
+      // unchanged); otherwise a viewer keeps playing the old, possibly broken, segments for up to an hour.
+      res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Content-Type', contentType);
 
       return res.sendFile(filePath);
