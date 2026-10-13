@@ -41,6 +41,27 @@ You can also start each one yourself: `APP_MODE=user USER_PORT=5000 npm start` a
 
 A `user` server has no admin routes at all (`/admin`, `/api/admin`, `/metrics` and `/api/docs` are 404, and uploads are refused even with a valid key). An `admin` server has no public API, so it can be firewalled or kept on a private network. `docker compose up` starts them as separate services (user on 5000, admin on 5001).
 
+## Audio languages and subtitles
+
+**Several audio languages in one file** (common with files from Telegram, e.g. Hindi + English): processing finds every audio track, encodes each one on its own, and the player gets an **Audio** menu. The video sizes carry no sound; the languages are separate streams the player switches between (a master playlist with `EXT-X-MEDIA` entries). A track is named from the file's own title, else its language ("Hindi"); an admin can rename it in **Edit settings**. A file with a single audio track works as before.
+
+**Subtitles** come from two places and appear together in the player's **Subtitles** menu (off until chosen; the choice is remembered by language):
+
+- *In the file*: text subtitle streams (SRT, ASS, mov_text, WebVTT) are converted to WebVTT during processing. Picture-based ones (Blu-ray PGS, DVD) cannot be converted; the log says how many were skipped.
+- *Uploaded by an admin*: in **Edit settings**, choose a language, optionally a name, and add an `.srt` or `.vtt` file (up to 2 MB, UTF-8 or UTF-16). SRT is converted to WebVTT. It works at once with no reprocessing, and uploaded subtitles are kept when the video is reprocessed (subtitles found in the file are rebuilt).
+
+Videos processed before this feature need **Reprocess** to pick up extra audio languages or embedded subtitles; uploaded subtitles can be added to any video straight away.
+
+API (admin): `POST /api/admin/videos/:id/subtitles?lang=hi&label=Hindi` (file as the body), `DELETE /api/admin/videos/:id/subtitles/:trackId`, `PATCH /api/admin/videos/:id/tracks/:trackId` with `{ "label": "..." }`.
+
+## Sections: Movies, Series, Anime
+
+The public site has three sections. A standalone video is a **Movie**; a series is under **Series**. Either can be filed under **Anime** instead: set **Section** to Anime in the series form, or in a video's **Edit settings** (episodes follow their series). Anime titles then appear on the Anime page and the home page's Anime row, and no longer under Movies or Series. API: `category: "anime"` (or `""` to move it back) on `PATCH /api/admin/series/:id` and `PATCH /api/admin/videos/:id`.
+
+### Season numbers
+
+A new series starts with Season 1; the **New series** form has a **First season number** if you are starting with a later season (0 is for specials). On the series page each season has **Change number**, which renumbers the season and moves all of its episodes with it (refused if that number is already a season of the series). API: `firstSeason` on `POST /api/admin/series`, and `PATCH /api/admin/series/:id/seasons/:number` with `{ "number": 2 }`.
+
 ## Admin sign-in
 
 Set `ADMIN_API_KEY` (see `.env.example`). The admin app asks for it and keeps a signed, HttpOnly session cookie. Scripts can send it as an `x-admin-key` header.

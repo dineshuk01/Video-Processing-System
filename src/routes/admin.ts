@@ -1,10 +1,11 @@
-import { NextFunction, Request, Response, Router } from 'express';
+import express, { NextFunction, Request, Response, Router } from 'express';
 import { dbService } from '../services/db/dbService';
 import { videoService } from '../services/video/videoService';
 import { getQueueService } from '../services/queue/queueService';
 import { getStorageService } from '../services/storage/storageService';
 import { getComputeStatus } from '../services/compute/computeStatus';
-import { ResponseHandler } from '../utils/responseHandler';
+import { HttpError, ResponseHandler } from '../utils/responseHandler';
+import { MAX_SUBTITLE_BYTES } from '../services/subtitles/subtitleService';
 import { summary } from '../utils/videoView';
 import { imageBody } from '../middleware/imageBody';
 import { VideoStatus } from '../types';
@@ -144,8 +145,8 @@ router.post('/videos/:id/publish', async (req: Request, res: Response, next: Nex
 
 router.patch('/videos/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, qualities, autoPublish, allowUpscale } = req.body || {};
-    const video = await videoService.updateSettings(req.params.id, { title, qualities, autoPublish, allowUpscale });
+    const { title, qualities, autoPublish, allowUpscale, category } = req.body || {};
+    const video = await videoService.updateSettings(req.params.id, { title, qualities, autoPublish, allowUpscale, category });
     return ResponseHandler.success(res, summary(video));
   } catch (err) {
     next(err);
@@ -191,6 +192,37 @@ router.post('/videos/:id/thumbnail/frame', async (req: Request, res: Response, n
 router.delete('/videos/:id/thumbnail', async (req: Request, res: Response, next: NextFunction) => {
   try {
     return ResponseHandler.success(res, summary(await videoService.resetThumbnail(req.params.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Subtitles: upload an SRT/WebVTT file (sent as the request body, language and name in the query),
+// remove one, or rename any audio/subtitle track
+const subtitleBody = express.raw({ type: () => true, limit: MAX_SUBTITLE_BYTES });
+
+router.post('/videos/:id/subtitles', (req: Request, res: Response, next: NextFunction) => {
+  subtitleBody(req, res, (err?: any) => {
+    if (err) return next(new HttpError(`Subtitle files can be up to ${MAX_SUBTITLE_BYTES / 1024 / 1024} MB`, 413, 'SUBTITLE_TOO_LARGE'));
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return next(new HttpError('Send the subtitle file as the request body', 400, 'NO_FILE'));
+    videoService
+      .addSubtitle(req.params.id, { language: req.query.lang, label: req.query.label, file: req.body })
+      .then((video) => ResponseHandler.success(res, summary(video)))
+      .catch(next);
+  });
+});
+
+router.delete('/videos/:id/subtitles/:trackId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, summary(await videoService.removeSubtitle(req.params.id, req.params.trackId)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/videos/:id/tracks/:trackId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    return ResponseHandler.success(res, summary(await videoService.renameTrack(req.params.id, req.params.trackId, req.body?.label)));
   } catch (err) {
     next(err);
   }

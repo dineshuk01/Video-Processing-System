@@ -57,6 +57,13 @@ function parseDescription(value: unknown): string | undefined {
   return text || undefined;
 }
 
+// '' / null / 'none' put a title back in its default section
+export function parseCategory(value: unknown): 'anime' | undefined {
+  if (value === null || value === '' || value === 'none') return undefined;
+  if (value === 'anime') return 'anime';
+  throw new HttpError('The section must be "anime" or empty', 400, 'INVALID_CATEGORY');
+}
+
 const notFound = (id: string) => new HttpError(`Series ${id} not found`, 404, 'SERIES_NOT_FOUND');
 
 export const seriesService = {
@@ -75,16 +82,19 @@ export const seriesService = {
     return series;
   },
 
-  async create(input: { title: unknown; description?: unknown }): Promise<Series> {
+  async create(input: { title: unknown; description?: unknown; category?: unknown; firstSeason?: unknown }): Promise<Series> {
     const title = parseTitle(input.title);
     const description = parseDescription(input.description);
+    const category = input.category === undefined ? undefined : parseCategory(input.category);
     const now = new Date().toISOString();
     const series: Series = {
       id: Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 8),
       title,
       description,
+      category,
       published: false, // a new series stays hidden until an admin publishes it
-      seasons: [1],
+      // Season 1 unless the admin starts elsewhere (e.g. only season 3 is being added)
+      seasons: [input.firstSeason === undefined || input.firstSeason === null || input.firstSeason === '' ? 1 : parseSeasonNumber(input.firstSeason)],
       createdAt: now,
       updatedAt: now,
     };
@@ -94,8 +104,9 @@ export const seriesService = {
     });
   },
 
-  async update(id: string, input: { title?: unknown; description?: unknown; published?: unknown }): Promise<Series> {
+  async update(id: string, input: { title?: unknown; description?: unknown; published?: unknown; category?: unknown }): Promise<Series> {
     const patch: Partial<Series> = {};
+    if (input.category !== undefined) patch.category = parseCategory(input.category);
     if (input.title !== undefined) patch.title = parseTitle(input.title);
     if (input.description !== undefined) patch.description = parseDescription(input.description);
     if (input.published !== undefined) {
@@ -134,6 +145,18 @@ export const seriesService = {
       const series = items.find((s) => s.id === id);
       if (!series) throw notFound(id);
       series.seasons = series.seasons.filter((n) => n !== season);
+      series.updatedAt = new Date().toISOString();
+      return { result: { ...series }, write: true };
+    });
+  },
+
+  // Give a season a different number (its episodes are moved by the caller)
+  async renumberSeason(id: string, from: number, to: number): Promise<Series> {
+    return getStore().transaction((items) => {
+      const series = items.find((s) => s.id === id);
+      if (!series) throw notFound(id);
+      if (series.seasons.includes(to)) throw new HttpError(`This series already has ${to === 0 ? 'Specials' : `Season ${to}`}. Move the episodes there one by one, or pick another number.`, 409, 'SEASON_EXISTS');
+      series.seasons = [...series.seasons.filter((n) => n !== from), to].sort((a, b) => a - b);
       series.updatedAt = new Date().toISOString();
       return { result: { ...series }, write: true };
     });

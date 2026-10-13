@@ -5,7 +5,7 @@
    Depends on /shared/common.js.
    ============================================================ */
 (function () {
-  const { esc, timeAgo, formatDuration, toast, copyText, dialog } = window.VF;
+  const { esc, timeAgo, formatDuration, toast, copyText, dialog, whenHls } = window.VF;
 
   const app = document.getElementById('app');
   const hdr = document.getElementById('hdr');
@@ -44,6 +44,7 @@
   const seconds = (v) => v.duration || 0;
   const qualityOf = (v) => (height(v) ? `${height(v)}p` : '');
   const ageMs = (v) => Date.now() - new Date(v.publishedAt).getTime();
+  const isAnime = (x) => x.category === 'anime';
   const watchHref = (v) => `#/watch/${encodeURIComponent(v.id)}`;
 
   // ─── Series helpers ────────────────────────────────────────
@@ -204,6 +205,7 @@
       case 'search': setNav(''); currentView = gridView(`Results for “${route.q}”`, 'search', route.q); break;
       case 'browse': setNav(route.param); currentView = gridView(FILTERS[route.param] ? FILTERS[route.param].title : 'Browse', route.param); break;
       case 'movies': setNav('movies'); currentView = gridView('Movies', 'movies'); break;
+      case 'anime': setNav('anime'); currentView = gridView('Anime', 'anime'); break;
       case 'mylist': setNav('mylist'); currentView = gridView('My List', 'mylist'); break;
       case 'history': setNav('history'); currentView = gridView('Watch history', 'history'); break;
       case 'series': setNav('series'); currentView = route.param ? seriesView(route.param) : gridView('TV Series', 'series'); break;
@@ -260,7 +262,7 @@
     const t = playTarget(s);
     return `
       <article class="tile">
-        <a class="tile-thumb" href="${seriesHref(s)}" aria-label="${esc(s.title)}, a series">${seriesThumb(s)}<span class="tile-badge">Series</span></a>
+        <a class="tile-thumb" href="${seriesHref(s)}" aria-label="${esc(s.title)}, a series">${seriesThumb(s)}<span class="tile-badge">${isAnime(s) ? 'Anime' : 'Series'}</span></a>
         <div class="tile-info">
           <div class="tile-btns">
             <a class="round round-play" href="${watchHref(t.ep)}" aria-label="${esc(t.label)}">${svg('play', 16)}</a>
@@ -293,7 +295,7 @@
   function seriesCardHtml(s) {
     return `
       <a class="gcard" href="${seriesHref(s)}">
-        <div class="gthumb">${seriesThumb(s)}<span class="tile-badge">Series</span></div>
+        <div class="gthumb">${seriesThumb(s)}<span class="tile-badge">${isAnime(s) ? 'Anime' : 'Series'}</span></div>
         <h3 class="tile-title">${esc(s.title)}</h3>
         <p class="tile-meta">${esc(seriesLine(s))}</p>
       </a>`;
@@ -465,10 +467,16 @@
 
     const listed = readList().map((id) => (id.startsWith('series:') ? state.series.find((x) => `series:${x.id}` === id) : state.videos[id])).filter(Boolean);
     const resume = continueWatching();
+    // Anime has its own section; everything else stays under TV Series and Movies
+    const tvSeries = seriesAll.filter((x) => !isAnime(x));
+    const animeSeries = seriesAll.filter(isAnime);
+    const movies = all.filter((x) => !isAnime(x));
+    const animeMovies = all.filter(isAnime);
     const rows = [
       resume.length ? rowHtml('Continue Watching', resume.map(({ v, pos, upNext }) => (v.seriesId ? episodeTileHtml(v, pos, upNext) : tileHtml(v, pos))).join('')) : '',
-      seriesAll.length ? rowHtml('TV Series', seriesAll.map(seriesTileHtml).join(''), '#/series') : '',
-      all.length ? rowHtml('Movies', all.map((v) => tileHtml(v)).join(''), '#/movies') : '',
+      tvSeries.length ? rowHtml('TV Series', tvSeries.map(seriesTileHtml).join(''), '#/series') : '',
+      movies.length ? rowHtml('Movies', movies.map((v) => tileHtml(v)).join(''), '#/movies') : '',
+      animeSeries.length || animeMovies.length ? rowHtml('Anime', animeSeries.map(seriesTileHtml).join('') + animeMovies.map((v) => tileHtml(v)).join(''), '#/anime') : '',
       listed.length ? rowHtml('My List', listed.map((v) => (v.seasons ? seriesTileHtml(v) : tileHtml(v))).join(''), '#/mylist') : '',
     ].join('');
 
@@ -550,7 +558,11 @@
       const series = tagSeries(seriesLibrary().filter((sr) => hit(sr.title) || hit(sr.description) || allEpisodes(sr).some((e) => hit(e.title))));
       items = [...series, ...movies];
     } else if (kind === 'series') {
-      items = tagSeries(seriesLibrary());
+      items = tagSeries(seriesLibrary().filter((x) => !isAnime(x)));
+    } else if (kind === 'movies') {
+      items = items.filter((x) => !isAnime(x));
+    } else if (kind === 'anime') {
+      items = [...tagSeries(seriesLibrary().filter(isAnime)), ...items.filter(isAnime)];
     } else if (kind === 'mylist') {
       items = readList().map((id) => (id.startsWith('series:') ? tagSeries(state.series.filter((x) => `series:${x.id}` === id))[0] : state.videos[id])).filter(Boolean);
     } else if (kind === 'history') {
@@ -565,6 +577,8 @@
         ? notice('film', 'No watch history yet', 'Videos you watch will appear here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
       : kind === 'series'
         ? notice('film', 'No series yet', 'Series will appear here as soon as they are published.', '<a class="btn btn-light" href="#/">Back to home</a>')
+      : kind === 'anime'
+        ? notice('film', 'No anime yet', 'Anime will appear here as soon as it is published.', '<a class="btn btn-light" href="#/">Back to home</a>')
       : kind === 'movies'
         ? notice('film', 'No movies yet', 'Movies will appear here as soon as they are published.', '<a class="btn btn-light" href="#/">Back to home</a>')
       : kind === 'search'
@@ -687,15 +701,17 @@
       el.innerHTML = list.length ? list.map(gridCardHtml).join('') : '<p class="tile-meta">No other videos yet.</p>';
     }
 
+    const subTracks = () => video.textTracks && video.textTracks.length ? video.textTracks : (video.subtitleUrl ? [{ id: 'legacy', language: 'en', label: 'English', url: video.subtitleUrl }] : []);
+
     function mount() {
       document.title = `${titleOf(video)} — VideoStream`;
       app.innerHTML = `
         <div class="stage">
           <div class="player" id="player">
             <video id="video" controls playsinline preload="metadata" autoplay
-                   ${video.subtitleUrl ? 'crossorigin="anonymous"' : ''}
+                   ${subTracks().length ? 'crossorigin="anonymous"' : ''}
                    ${video.thumbnailUrl ? `poster="${esc(video.thumbnailUrl)}"` : ''}>
-              ${video.subtitleUrl ? `<track kind="subtitles" label="English" srclang="en" src="${esc(video.subtitleUrl)}">` : ''}
+              ${subTracks().map((t) => `<track kind="subtitles" label="${esc(t.label)}" ${/^[a-z]{2,3}$/.test(t.language) ? `srclang="${t.language}"` : ''} src="${esc(t.url)}">`).join('')}
             </video>
             <div class="overlay" id="buffering" aria-hidden="true"><div class="spinner small"></div></div>
             <div class="overlay interactive" id="error" role="alert">${svg('alert', 30)}<p id="error-text"></p>
@@ -722,7 +738,8 @@
           <div class="controls">
             <label class="ctl">Quality <select id="quality" class="select"><option value="-1">Auto</option></select></label>
             <label class="ctl">Speed <select id="speed" class="select">${[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => `<option value="${s}" ${s === 1 ? 'selected' : ''}>${s}×</option>`).join('')}</select></label>
-            ${video.subtitleUrl ? '<button class="btn btn-gray btn-sm" id="cc" aria-pressed="false">Captions: Off</button>' : ''}
+            <label class="ctl" id="audio-wrap" hidden>Audio <select id="audio" class="select"></select></label>
+            ${subTracks().length ? `<label class="ctl">Subtitles <select id="subs" class="select"><option value="-1">Off</option>${subTracks().map((t, i) => `<option value="${i}">${esc(t.label)}</option>`).join('')}</select></label>` : ''}
             <label class="switch-label"><input type="checkbox" id="autonext" class="switch-input" role="switch" /><span>Autoplay next</span></label>
           </div>
 
@@ -738,10 +755,12 @@
       const videoEl = $('#video');
       const qualitySel = $('#quality');
       const speedSel = $('#speed');
-      const ccBtn = $('#cc');
+      const subsSel = $('#subs');
+      const audioSel = $('#audio');
       const auto = $('#autonext');
       const posKey = `vs-pos-${video.id}`;
       let hls = null;
+      let stopped = false;
       let netRetries = 0;
       let mediaRetries = 0;
       let countdown = null;
@@ -770,7 +789,7 @@
       videoEl.addEventListener('loadedmetadata', () => {
         const pos = parseFloat(storage.get(posKey));
         if (pos > 5 && pos < videoEl.duration - 5) { videoEl.currentTime = pos; toast(`Resumed from ${formatDuration(pos)}`, 'info', 2500); }
-        if (videoEl.textTracks[0]) videoEl.textTracks[0].mode = 'disabled';
+        applySubtitles(savedSubIndex());
       }, { once: true });
       videoEl.addEventListener('timeupdate', () => {
         if (Date.now() - lastSaved > 2000) {
@@ -780,15 +799,28 @@
         }
       });
 
-      // ── Captions ──
-      function setCaptions(on) {
-        const track = videoEl.textTracks[0];
-        if (!track || !ccBtn) return;
-        track.mode = on ? 'showing' : 'disabled';
-        ccBtn.setAttribute('aria-pressed', String(on));
-        ccBtn.textContent = `Captions: ${on ? 'On' : 'Off'}`;
+      // ── Subtitles ──
+      // The choice is remembered by language ("hi"), so it carries over to other videos
+      const tracks = subTracks();
+      function applySubtitles(index) {
+        for (let i = 0; i < videoEl.textTracks.length; i++) videoEl.textTracks[i].mode = i === index ? 'showing' : 'disabled';
+        if (subsSel) subsSel.value = String(index);
       }
-      if (ccBtn) ccBtn.addEventListener('click', () => setCaptions(ccBtn.getAttribute('aria-pressed') !== 'true'));
+      function savedSubIndex() {
+        const lang = storage.get('vs-sub');
+        return lang && lang !== 'off' ? tracks.findIndex((t) => t.language === lang) : -1;
+      }
+      if (subsSel) subsSel.addEventListener('change', () => {
+        const index = parseInt(subsSel.value, 10);
+        applySubtitles(index);
+        storage.set('vs-sub', index >= 0 ? tracks[index].language : 'off');
+      });
+      const toggleSubtitles = () => {
+        if (!subsSel) return;
+        applySubtitles(parseInt(subsSel.value, 10) >= 0 ? -1 : Math.max(0, savedSubIndex()));
+        const index = parseInt(subsSel.value, 10);
+        storage.set('vs-sub', index >= 0 ? tracks[index].language : 'off');
+      };
 
       // ── Up next countdown when the video ends ──
       const nextBox = $('#next-up');
@@ -814,9 +846,30 @@
       });
       videoEl.addEventListener('play', stopCountdown);
 
+      // ── Audio languages ──
+      function setupAudio() {
+        const found = hls.audioTracks || [];
+        $('#audio-wrap').hidden = found.length < 2;
+        if (found.length < 2) return;
+        audioSel.innerHTML = found.map((t, i) => `<option value="${i}">${esc((video.audioTracks && video.audioTracks[i] && video.audioTracks[i].label) || t.name || `Audio ${i + 1}`)}</option>`).join('');
+        const lang = storage.get('vs-audio');
+        const wanted = lang ? found.findIndex((t, i) => ((video.audioTracks && video.audioTracks[i] && video.audioTracks[i].language) || t.lang) === lang) : -1;
+        if (wanted >= 0 && wanted !== hls.audioTrack) hls.audioTrack = wanted;
+        audioSel.value = String(hls.audioTrack);
+      }
+      if (audioSel) audioSel.addEventListener('change', () => {
+        if (!hls) return;
+        const i = parseInt(audioSel.value, 10);
+        hls.audioTrack = i;
+        const info = video.audioTracks && video.audioTracks[i];
+        storage.set('vs-audio', (info && info.language) || (hls.audioTracks[i] && hls.audioTracks[i].lang) || '');
+      });
+
       // ── Hls.js ──
-      function start(resumeAt) {
+      async function start(resumeAt) {
         errorBox.classList.remove('visible');
+        await whenHls();
+        if (stopped) return;
         if (window.Hls && Hls.isSupported()) {
           hls = new Hls({ enableWorker: true, capLevelToPlayerSize: true });
           hls.loadSource(video.hlsPlaylistUrl);
@@ -831,6 +884,7 @@
             if (resumeAt) videoEl.currentTime = resumeAt;
             videoEl.play().catch(() => { /* autoplay blocked: the viewer presses play */ });
           });
+          hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio);
           hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
             const level = hls.levels[data.level];
             if (level && qualitySel.value === '-1') qualitySel.options[0].textContent = `Auto (${level.height}p)`;
@@ -881,7 +935,7 @@
           arrowdown: () => { videoEl.volume = Math.max(0, videoEl.volume - 0.1); },
           m: () => { videoEl.muted = !videoEl.muted; },
           f: () => (document.fullscreenElement ? document.exitFullscreen() : $('#player').requestFullscreen()),
-          c: () => ccBtn && setCaptions(ccBtn.getAttribute('aria-pressed') !== 'true'),
+          c: toggleSubtitles,
         };
         if (actions[key]) { e.preventDefault(); actions[key](); }
       }
@@ -890,6 +944,7 @@
       start(0);
 
       return () => {
+        stopped = true;
         document.removeEventListener('keydown', onKey);
         stopCountdown();
         if (hls) hls.destroy();

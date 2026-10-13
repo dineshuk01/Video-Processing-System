@@ -183,7 +183,7 @@ router.get(
       // unpublished videos are admin-only, and look "not found" to everyone else.
       if (!isAdminRequest(req)) {
         const publicBucket = process.env.LOCAL_S3_PUBLIC_BUCKET;
-        const match = bucket === publicBucket ? /^(?:processed|thumbnails)\/([^/]+)\//.exec(key) : null;
+        const match = bucket === publicBucket ? /^(?:processed|thumbnails|subtitles)\/([^/]+)\//.exec(key) : null;
         if (!match || !(await isPublishedVideo(match[1]))) {
           return ResponseHandler.error(res, `Object ${key} not found in bucket ${bucket}`, 404);
         }

@@ -30,7 +30,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return ResponseHandler.success(res, await seriesService.create({ title: req.body?.title, description: req.body?.description }), 201);
+    return ResponseHandler.success(res, await seriesService.create({ title: req.body?.title, description: req.body?.description, category: req.body?.category, firstSeason: req.body?.firstSeason }), 201);
   } catch (err) {
     next(err);
   }
@@ -49,8 +49,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, description, published } = req.body || {};
-    const series = await seriesService.update(req.params.id, { title, description, published });
+    const { title, description, published, category } = req.body || {};
+    const series = await seriesService.update(req.params.id, { title, description, published, category });
     clearPublishedCache(); // every episode's visibility depends on this
     return ResponseHandler.success(res, series);
   } catch (err) {
@@ -90,6 +90,16 @@ router.delete('/:id/poster', async (req: Request, res: Response, next: NextFunct
 router.post('/:id/seasons', async (req: Request, res: Response, next: NextFunction) => {
   try {
     return ResponseHandler.success(res, await seriesService.addSeason(req.params.id, req.body?.number), 201);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Renumber a season; its episodes move with it
+router.patch('/:id/seasons/:number', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const series = await videoService.renumberSeason(req.params.id, parseSeasonNumber(req.params.number), parseSeasonNumber(req.body?.number));
+    return ResponseHandler.success(res, series);
   } catch (err) {
     next(err);
   }

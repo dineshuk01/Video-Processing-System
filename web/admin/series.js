@@ -17,6 +17,8 @@
     .sort((a, b) => (a.seasonNumber - b.seasonNumber) || (a.episodeNumber - b.episodeNumber));
   const nextEpisode = (seriesId, season, excludeId) =>
     1 + Math.max(0, ...Object.values(store.videos).filter((v) => v.seriesId === seriesId && v.seasonNumber === season && v.id !== excludeId).map((v) => v.episodeNumber || 0));
+  // Every season of a series: the ones it lists plus any that only exist because an episode is in them
+  const seasonsOf = (series) => [...new Set([...series.seasons, ...episodesOf(series.id).map((v) => v.seasonNumber)])].sort((a, b) => a - b);
   const seasonLabel = (n) => (n === 0 ? 'Specials' : `Season ${n}`);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const isLive = (v) => v.status === 'COMPLETED' && v.published; // finished and published
@@ -44,6 +46,14 @@
       html: `<form class="edit-form" id="series-form">
           ${field('Title', `<input class="input" name="title" maxlength="120" required value="${esc(series ? series.title : '')}" placeholder="e.g. Midnight Garden" />`)}
           ${field('Description', `<textarea class="input" name="description" rows="4" maxlength="2000" placeholder="A short summary shown on the series page">${esc(series ? series.description || '' : '')}</textarea>`, 'Shown on the public series page.')}
+          ${field('Section', `<select class="input" name="category"><option value="">Series</option><option value="anime" ${series && series.category === 'anime' ? 'selected' : ''}>Anime</option></select>`, 'Where it appears on the public site.')}
+          ${editing ? `<div class="field"><span>Seasons</span>
+            <div class="season-edit-list">${seasonsOf(series).map((n) => `<label class="season-edit-row">
+                <span>Season number</span>
+                <input class="input" type="number" min="0" max="99" value="${n}" data-season="${n}" required />
+                <span class="muted">${plural(episodesOf(series.id).filter((v) => v.seasonNumber === n).length, 'episode')}</span></label>`).join('')}</div>
+            <small>Change a number to renumber that season; its episodes move with it. 0 is for specials.</small></div>` : ''}
+          ${editing ? '' : field('First season number', `<input class="input" name="firstSeason" type="number" min="0" max="99" value="1" required />`, 'Usually 1. Use another number if you are starting with a later season; 0 is for specials. You can change it later.')}
           ${editing ? `<div class="field thumb-field"><span>Poster</span>
             <div class="thumb-row">
               <div class="thumb-preview" id="poster-preview">${A().previewHtml(series.posterUrl)}</div>
@@ -98,13 +108,31 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
-        const body = { title: form.title.value, description: form.description.value };
+        const body = { title: form.title.value, description: form.description.value, category: form.category.value };
         if (editing) {
+          // Check the season numbers before saving anything
+          const changes = [...form.querySelectorAll('[data-season]')].map((el) => ({ from: Number(el.dataset.season), to: Number(el.value) })).filter((c) => c.from !== c.to);
+          const wanted = [...form.querySelectorAll('[data-season]')].map((el) => Number(el.value));
+          if (new Set(wanted).size !== wanted.length) throw new Error('Two seasons cannot have the same number.');
+
           await A().api(`/api/admin/series/${encodeURIComponent(series.id)}`, { method: 'PATCH', body });
+          // Renumber one at a time, always into a number that is free at that moment (so 1 -> 2 and 2 -> 3 work together)
+          let taken = seasonsOf(series);
+          while (changes.length) {
+            const i = changes.findIndex((c) => !taken.includes(c.to));
+            if (i === -1) throw new Error('Those seasons would swap numbers. Change one of them to a free number first, save, then set the final numbers.');
+            const c = changes.splice(i, 1)[0];
+            await A().api(`/api/admin/series/${encodeURIComponent(series.id)}/seasons/${c.from}`, { method: 'PATCH', body: { number: c.to } });
+            taken = taken.filter((n) => n !== c.from).concat(c.to);
+            const moved = {};
+            Object.values(store.videos).forEach((v) => { if (v.seriesId === series.id && v.seasonNumber === c.from) moved[v.id] = { ...v, seasonNumber: c.to }; });
+            store.videos = { ...store.videos, ...moved };
+          }
+          store.emit('videos');
           await VF.refreshSeries();
           toast('Series saved', 'success', 2200);
         } else {
-          const created = await A().api('/api/admin/series', { method: 'POST', body });
+          const created = await A().api('/api/admin/series', { method: 'POST', body: { ...body, firstSeason: Number(form.firstSeason.value) } });
           await VF.refreshSeries();
           location.hash = `#/series/${created.id}`;
           toast('Series created. Add seasons and episodes below.', 'success', 3000);
@@ -192,6 +220,36 @@
   }
 
   // ─── Episodes ──────────────────────────────────────────────
+  // Change a season's number; its episodes move with it
+  function openRenumberSeason(series, number) {
+    const modal = dialog({
+      title: `Change the number of ${seasonLabel(number)}`,
+      html: `<form class="edit-form" id="renumber-form">
+          ${field('Season number', `<input class="input" name="number" type="number" min="0" max="99" value="${number}" required />`, 'All episodes in this season move with it. Use 0 for specials.')}
+          ${errorBox}
+          <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button type="submit" class="btn btn-primary">Save</button></div></form>`,
+    });
+    modal.el.querySelector('input[name="number"]').select();
+    modal.el.querySelector('#renumber-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const to = Number(e.target.number.value);
+      if (to === number) return modal.close();
+      try {
+        await A().api(`/api/admin/series/${encodeURIComponent(series.id)}/seasons/${number}`, { method: 'PATCH', body: { number: to } });
+        // The episodes moved too: update the copies this page already holds
+        const moved = {};
+        Object.values(store.videos).forEach((v) => { if (v.seriesId === series.id && v.seasonNumber === number) moved[v.id] = { ...v, seasonNumber: to }; });
+        store.videos = { ...store.videos, ...moved };
+        store.emit('videos');
+        await VF.refreshSeries();
+        toast(`${seasonLabel(number)} is now ${seasonLabel(to)}`, 'success', 2600);
+        modal.close();
+      } catch (err) {
+        showError(modal.el, err.message);
+      }
+    });
+  }
+
   // Attach an existing video to a season of this series
   function openAddExisting(series, season) {
     const candidates = Object.values(store.videos).filter((v) => !v.seriesId).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -309,7 +367,7 @@
       reconcile(tbody, store.series, {
         key: (s) => s.id,
         html: (s) => `<tr class="clickable" data-href="#/series/${esc(s.id)}">
-          <td><a class="name-cell" href="#/series/${esc(s.id)}">${A().thumb({ thumbnailUrl: s.posterUrl })}<span><span class="cell-title">${esc(s.title)}</span>
+          <td><a class="name-cell" href="#/series/${esc(s.id)}">${A().thumb({ thumbnailUrl: s.posterUrl })}<span><span class="cell-title">${esc(s.title)}${s.category === 'anime' ? ' <span class="tag-anime">Anime</span>' : ''}</span>
             <span class="cell-sub">${esc(snippet(s.description) || 'No description yet')}</span></span></a></td>
           <td>${plural(s.seasons.length, 'season')}</td>
           <td>${s.liveEpisodes} live <span class="muted">of ${s.episodeCount}</span></td>
@@ -397,6 +455,7 @@
               <div class="head-actions">
                 <a class="btn btn-primary btn-sm" href="#/upload?series=${encodeURIComponent(id)}&season=${n}">${icon('upload', 14)} Upload episodes</a>
                 <button class="btn btn-ghost btn-sm" data-add-existing="${n}">Add existing video</button>
+                <button class="btn btn-ghost btn-sm" data-renumber-season="${n}">Change number</button>
                 ${inSeason.length === 0 ? `<button class="btn btn-ghost btn-sm btn-danger-text" data-remove-season="${n}">Remove season</button>` : ''}
               </div></div>
             ${inSeason.length ? `<div class="table-wrap"><table class="table">
@@ -418,6 +477,7 @@
       if (get('[data-delete-series]')) return openDeleteSeries(series);
       if (get('[data-add-season]')) return openAddSeason(series);
       if ((el = get('[data-add-existing]'))) return openAddExisting(series, Number(el.dataset.addExisting));
+      if ((el = get('[data-renumber-season]'))) return openRenumberSeason(series, Number(el.dataset.renumberSeason));
       if ((el = get('[data-remove-season]'))) return removeSeason(series, Number(el.dataset.removeSeason));
       if ((el = get('[data-ep-publish]'))) return A().setPublished(el.dataset.epPublish, el.dataset.to === 'true').then(() => VF.refreshSeries());
       if ((el = get('[data-ep-edit]'))) return VF.openAssignDialog(el.dataset.epEdit);

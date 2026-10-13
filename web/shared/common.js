@@ -172,8 +172,18 @@
     }
   }
 
+  // The player library loads with `defer`, so it can arrive after the page script has started. Wait for it
+  // (up to 4 s) instead of falling back to the browser's own HLS, which has no audio or quality menus.
+  function whenHls() {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const check = () => (window.Hls || Date.now() - started > 4000 ? resolve() : setTimeout(check, 40));
+      check();
+    });
+  }
+
   window.VF = {
     esc, formatBytes, formatDate, timeAgo, formatDuration, formatEta,
-    toast, confirmDialog, dialog, reconcile, copyText,
+    toast, confirmDialog, dialog, reconcile, copyText, whenHls,
   };
 })();

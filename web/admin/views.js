@@ -88,6 +88,16 @@
     return json.data;
   }
 
+  // A subtitle file (SRT or WebVTT) goes up as the request body; language and name travel in the query
+  async function sendSubtitle(id, file, lang, label) {
+    if (file.size > 2 * 1024 * 1024) throw new Error('That subtitle file is over 2 MB');
+    const query = `lang=${encodeURIComponent(lang)}${label ? `&label=${encodeURIComponent(label)}` : ''}`;
+    const res = await fetch(`/api/admin/videos/${encodeURIComponent(id)}/subtitles?${query}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: file });
+    const json = await res.json().catch(() => null);
+    if (!json || !json.success) throw new Error(json?.error?.message || `Upload failed (HTTP ${res.status})`);
+    return json.data;
+  }
+
   // The picture inside a thumbnail box, or a placeholder when there is none yet
   const previewHtml = (url) => (url ? `<img src="${esc(url)}" alt="Current thumbnail" />` : `<span class="thumb-none">${icon('film', 22)}<span>No thumbnail yet</span></span>`);
 
@@ -276,6 +286,18 @@
               </div>
             </div>
             <small>JPEG, PNG or WebP, up to 8 MB. To use a frame from the video instead, open its preview, pause on the frame and press <strong>Use this frame as thumbnail</strong>.</small></div>
+          ${v.seriesId ? '' : `<label class="field"><span>Section</span>
+            <select class="input" name="category"><option value="">Movies</option><option value="anime" ${v.category === 'anime' ? 'selected' : ''}>Anime</option></select>
+            <small>Where it appears on the public site. Episodes follow their series.</small></label>`}
+          <div class="field" id="tracks-field"><span>Audio &amp; subtitles</span>
+            <div id="track-list" class="track-list"></div>
+            <div class="sub-add">
+              <select class="input" id="sub-lang" aria-label="Subtitle language">${[['hi', 'Hindi'], ['en', 'English'], ['ta', 'Tamil'], ['te', 'Telugu'], ['kn', 'Kannada'], ['ml', 'Malayalam'], ['bn', 'Bengali'], ['mr', 'Marathi'], ['pa', 'Punjabi'], ['gu', 'Gujarati'], ['ur', 'Urdu'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['ar', 'Arabic'], ['und', 'Other']].map(([c, n]) => `<option value="${c}">${n}</option>`).join('')}</select>
+              <input class="input" id="sub-label" maxlength="40" placeholder="Name (optional)" aria-label="Subtitle name" />
+              <button type="button" class="btn btn-ghost btn-sm" id="sub-upload">${icon('upload', 14)} Add subtitles</button>
+              <input type="file" id="sub-file" accept=".srt,.vtt,text/vtt,application/x-subrip,text/plain" hidden />
+            </div>
+            <small>SRT or WebVTT, up to 2 MB. Subtitles work straight away, with no reprocessing. Audio languages and subtitles found inside the video file are picked up when it is processed.</small></div>
           <fieldset class="field"><legend>Output qualities</legend>
             ${QUALITIES.map((q) => `<label class="check"><input type="checkbox" name="quality" value="${q}" ${selected.includes(q) ? 'checked' : ''} /> ${q}p${reachesClass(v, q) ? '' : ' <span class="muted">— larger than the source, needs upscaling</span>'}</label>`).join('')}
             <small>Applied the next time this video is processed.${v.metadata ? ` The source is ${esc(v.metadata.width)}×${esc(v.metadata.height)}.` : ''}</small></fieldset>
@@ -324,10 +346,59 @@
         toast(err.message, 'error');
       }
     });
+    // Audio languages and subtitles: changes apply straight away, like the thumbnail
+    const trackList = modal.el.querySelector('#track-list');
+    function renderTracks() {
+      const cur = store.videos[id] || v;
+      const audio = cur.audioTracks || [];
+      const text = cur.textTracks || [];
+      const row = (t, kind) => `<div class="track-row" data-id="${esc(t.id)}">
+          <span class="track-kind">${kind === 'audio' ? 'Audio' : 'Subtitles'}</span>
+          <input class="input track-name" value="${esc(t.label)}" maxlength="40" aria-label="Name of this track" />
+          <span class="track-lang">${esc(t.language && t.language !== 'und' ? t.language : '')}${t.source === 'embedded' ? ' · from the file' : ''}</span>
+          ${kind === 'text' ? `<button type="button" class="btn btn-ghost btn-sm" data-remove="${esc(t.id)}">Remove</button>` : ''}</div>`;
+      trackList.innerHTML = audio.length || text.length
+        ? audio.map((t) => row(t, 'audio')).join('') + text.map((t) => row(t, 'text')).join('')
+        : '<p class="muted-text">No extra audio languages or subtitles yet.</p>';
+    }
+    const applyTracks = (updated) => { store.videos = { ...store.videos, [id]: updated }; store.emit('videos'); renderTracks(); };
+    renderTracks();
+    trackList.addEventListener('change', async (e) => {
+      const input = e.target.closest('.track-name');
+      if (!input) return;
+      try {
+        applyTracks(await api(`/api/admin/videos/${encodeURIComponent(id)}/tracks/${encodeURIComponent(input.closest('.track-row').dataset.id)}`, { method: 'PATCH', body: { label: input.value } }));
+        toast('Name saved', 'success', 1800);
+      } catch (err) { toast(err.message, 'error'); renderTracks(); }
+    });
+    trackList.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-remove]');
+      if (!btn) return;
+      try {
+        applyTracks(await api(`/api/admin/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(btn.dataset.remove)}`, { method: 'DELETE' }));
+        toast('Subtitles removed', 'success', 1800);
+      } catch (err) { toast(err.message, 'error'); }
+    });
+    const subFile = modal.el.querySelector('#sub-file');
+    modal.el.querySelector('#sub-upload').addEventListener('click', () => subFile.click());
+    subFile.addEventListener('change', async () => {
+      const file = subFile.files[0];
+      subFile.value = '';
+      if (!file) return;
+      const lang = modal.el.querySelector('#sub-lang').value;
+      const labelInput = modal.el.querySelector('#sub-label');
+      try {
+        applyTracks(await sendSubtitle(id, file, lang, labelInput.value.trim()));
+        labelInput.value = '';
+        toast('Subtitles added', 'success', 2200);
+      } catch (err) { toast(err.message, 'error'); }
+    });
+
     const read = () => ({
       title: form.title.value.trim(),
       qualities: [...form.querySelectorAll('input[name="quality"]:checked')].map((el) => Number(el.value)),
       autoPublish: form.autoPublish.checked,
+      ...(form.category ? { category: form.category.value } : {}),
       allowUpscale: form.allowUpscale.checked,
     });
     async function save(reprocess) {
@@ -917,15 +988,17 @@
       del: (k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } },
     };
 
+    const subTracks = video.textTracks && video.textTracks.length ? video.textTracks : (video.subtitleUrl ? [{ id: 'legacy', language: 'en', label: 'English', url: video.subtitleUrl }] : []);
+
     root.innerHTML = `
       <a class="back-link" href="#/videos">${icon('back', 16)} Back to Videos</a>
       <div class="watch-grid">
         <section aria-label="Video player">
           <div class="video-wrap">
             <video id="hls-video" controls playsinline preload="metadata"
-                   ${video.subtitleUrl ? 'crossorigin="anonymous"' : ''}
+                   ${subTracks.length ? 'crossorigin="anonymous"' : ''}
                    ${video.thumbnailUrl ? `poster="${esc(video.thumbnailUrl)}"` : ''}>
-              ${video.subtitleUrl ? `<track kind="subtitles" label="English" srclang="en" src="${esc(video.subtitleUrl)}">` : ''}
+              ${subTracks.map((t) => `<track kind="subtitles" label="${esc(t.label)}" ${/^[a-z]{2,3}$/.test(t.language) ? `srclang="${t.language}"` : ''} src="${esc(t.url)}">`).join('')}
             </video>
             <div class="player-overlay" id="overlay-buffering" aria-hidden="true"><div class="spinner"></div></div>
             <div class="player-overlay interactive" id="overlay-error" role="alert">
@@ -953,7 +1026,8 @@
           <div class="controls-bar">
             <div class="control-group"><label for="speed-select">Speed</label>
               <select class="select" id="speed-select">${[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => `<option value="${s}" ${s === 1 ? 'selected' : ''}>${s}×</option>`).join('')}</select></div>
-            ${video.subtitleUrl ? '<button class="btn btn-ghost btn-sm btn-toggle" id="cc-toggle" aria-pressed="false">Captions: Off</button>' : ''}
+            <div class="control-group" id="audio-wrap" hidden><label for="audio-select">Audio</label><select class="select" id="audio-select"></select></div>
+            ${subTracks.length ? `<div class="control-group"><label for="subs-select">Subtitles</label><select class="select" id="subs-select"><option value="-1">Off</option>${subTracks.map((t, i) => `<option value="${i}">${esc(t.label)}</option>`).join('')}</select></div>` : ''}
           </div>
 
           <div class="tabs" role="tablist" id="watch-tabs">
@@ -977,7 +1051,7 @@
               <span><kbd>J</kbd> <kbd>L</kbd></span><span>Seek 10 s</span>
               <span><kbd>↑</kbd> <kbd>↓</kbd></span><span>Volume</span>
               <span><kbd>M</kbd></span><span>Mute</span><span><kbd>F</kbd></span><span>Fullscreen</span>
-              ${video.subtitleUrl ? '<span><kbd>C</kbd></span><span>Captions</span>' : ''}
+              ${subTracks.length ? '<span><kbd>C</kbd></span><span>Subtitles</span>' : ''}
             </div></section>
         </aside>
       </div>`;
@@ -985,7 +1059,8 @@
     const $ = (sel) => root.querySelector(sel);
     const videoEl = $('#hls-video');
     const speedSel = $('#speed-select');
-    const ccBtn = $('#cc-toggle');
+    const subsSel = $('#subs-select');
+    const audioSel = $('#audio-select');
     const bufferingOverlay = $('#overlay-buffering');
     const errorOverlay = $('#overlay-error');
     let hls = null;
@@ -1132,26 +1207,34 @@
         videoEl.currentTime = pos;
         toast(`Resumed from ${formatDuration(pos)}`, 'info', 2500);
       }
-      if (videoEl.textTracks[0]) videoEl.textTracks[0].mode = 'disabled';
     }, { once: true });
     videoEl.addEventListener('timeupdate', () => {
       if (Date.now() - lastSaved > 2000) { lastSaved = Date.now(); storage.set(posKey, videoEl.currentTime); }
     });
     videoEl.addEventListener('ended', () => storage.del(posKey));
 
-    // ── Captions ──
-    function setCaptions(on) {
-      const track = videoEl.textTracks[0];
-      if (!track || !ccBtn) return;
-      track.mode = on ? 'showing' : 'disabled';
-      ccBtn.setAttribute('aria-pressed', String(on));
-      ccBtn.textContent = `Captions: ${on ? 'On' : 'Off'}`;
+    // ── Subtitles (off until chosen) ──
+    function applySubtitles(index) {
+      for (let i = 0; i < videoEl.textTracks.length; i++) videoEl.textTracks[i].mode = i === index ? 'showing' : 'disabled';
+      if (subsSel) subsSel.value = String(index);
     }
-    if (ccBtn) ccBtn.addEventListener('click', () => setCaptions(ccBtn.getAttribute('aria-pressed') !== 'true'));
+    if (subsSel) subsSel.addEventListener('change', () => applySubtitles(parseInt(subsSel.value, 10)));
+    const toggleSubtitles = () => { if (subsSel) applySubtitles(parseInt(subsSel.value, 10) >= 0 ? -1 : 0); };
+
+    // ── Audio languages ──
+    function setupAudio() {
+      const found = hls ? hls.audioTracks : [];
+      $('#audio-wrap').hidden = found.length < 2;
+      if (found.length < 2) return;
+      audioSel.innerHTML = found.map((t, i) => `<option value="${i}">${esc((video.audioTracks && video.audioTracks[i] && video.audioTracks[i].label) || t.name || `Audio ${i + 1}`)}</option>`).join('');
+      audioSel.value = String(hls.audioTrack);
+    }
+    if (audioSel) audioSel.addEventListener('change', () => { if (hls) hls.audioTrack = parseInt(audioSel.value, 10); });
 
     // ── Hls.js ──
-    function startPlayback(resumeAt) {
+    async function startPlayback(resumeAt) {
       errorOverlay.classList.remove('visible');
+      await VF.whenHls();
       if (window.Hls && Hls.isSupported()) {
         hls = new Hls({ enableWorker: true, capLevelToPlayerSize: true });
         hls.loadSource(video.hlsPlaylistUrl);
@@ -1163,6 +1246,7 @@
           if (activeTab === 'transcode') renderTab();
           if (resumeAt) videoEl.currentTime = resumeAt;
         });
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio);
         hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
           const level = hls.levels[data.level];
           autoLevel = level ? level.height : null;
@@ -1214,7 +1298,7 @@
         arrowdown: () => { videoEl.volume = Math.max(0, videoEl.volume - 0.1); },
         m: () => { videoEl.muted = !videoEl.muted; },
         f: () => (document.fullscreenElement ? document.exitFullscreen() : videoEl.parentElement.requestFullscreen()),
-        c: () => ccBtn && setCaptions(ccBtn.getAttribute('aria-pressed') !== 'true'),
+        c: toggleSubtitles,
       };
       if (actions[key]) { e.preventDefault(); actions[key](); }
     }
@@ -1236,5 +1320,5 @@
 
   // Exposed so the job dialog can be opened from the row menu, and for the series pages (series.js)
   VF.openJobDialog = openJobDialog;
-  VF.admin = { api, sendImage, previewHtml, pill, titleOf, thumb, durationOf, qualityOf, setPublished, rowMenu, retryVideo, deleteVideo, openEditDialog, openJobDialog, visibilityPill, phaseOf };
+  VF.admin = { api, sendImage, sendSubtitle, previewHtml, pill, titleOf, thumb, durationOf, qualityOf, setPublished, rowMenu, retryVideo, deleteVideo, openEditDialog, openJobDialog, visibilityPill, phaseOf };
 })();

@@ -6,7 +6,8 @@ import * as dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-import { VideoStatus, VideoMetadata } from './types';
+import { VideoStatus, VideoMetadata, AudioTrack, TextTrack } from './types';
+import { resolveLanguage, trackLabel } from './utils/languages';
 import { dbService } from './services/db/dbService';
 import { getStorageService } from './services/storage/storageService';
 import { Logger } from './utils/logger';
@@ -171,6 +172,50 @@ function probeAudioStart(filePath: string): Promise<number | null> {
   });
 }
 
+// Audio and subtitle tracks in the upload. Files from many sources carry several audio languages
+// (e.g. Hindi + English) and subtitle streams; the first audio stream is not always the one people want.
+interface SourceStream { index: number; codec: string; language: string; title: string; isDefault: boolean }
+
+// Text subtitles can be turned into WebVTT; picture-based ones (Blu-ray PGS, DVD) cannot
+const TEXT_SUBTITLE_CODECS = ['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'];
+
+function probeStreams(filePath: string): Promise<{ audio: SourceStream[]; subs: SourceStream[]; pictureSubs: number }> {
+  return new Promise((resolve) => {
+    const empty = { audio: [], subs: [], pictureSubs: 0 };
+    const proc = spawn(ffprobeBin, ['-v', 'quiet', '-print_format', 'json', '-show_streams', filePath]);
+    let out = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.on('error', () => resolve(empty));
+    proc.on('close', () => {
+      try {
+        const streams: any[] = JSON.parse(out).streams || [];
+        const info = (s: any): SourceStream => ({
+          index: s.index,
+          codec: s.codec_name || '',
+          language: s.tags?.language || '',
+          title: s.tags?.title || '',
+          isDefault: s.disposition?.default === 1,
+        });
+        const subStreams = streams.filter((s) => s.codec_type === 'subtitle');
+        const subs = subStreams.filter((s) => TEXT_SUBTITLE_CODECS.includes(s.codec_name)).map(info);
+        resolve({ audio: streams.filter((s) => s.codec_type === 'audio').map(info), subs, pictureSubs: subStreams.length - subs.length });
+      } catch {
+        resolve(empty);
+      }
+    });
+  });
+}
+
+// Menu names must differ: "Hindi", "Hindi" becomes "Hindi", "Hindi 2"
+function uniqueLabels(labels: string[]): string[] {
+  const seen = new Map<string, number>();
+  return labels.map((l) => {
+    const n = (seen.get(l) || 0) + 1;
+    seen.set(l, n);
+    return n === 1 ? l : `${l} ${n}`;
+  });
+}
+
 // ─── FFprobe: Probe source video metadata ─────────────────────
 function probeVideo(filePath: string): Promise<VideoMetadata> {
   return new Promise((resolve, reject) => {
@@ -286,12 +331,31 @@ async function executeTranscoding() {
     // cannot play ("bufferAppendError"). The encoder pads that stretch with silence instead (see -af below).
     // Padding inside the main encode is not enough: the silence is produced late, in one burst, so the early
     // segments still come out empty. Instead the audio is rebuilt first as its own gap-free track (fast, audio only).
-    const audioStart = await probeAudioStart(inputFilePath);
+    const streams = await probeStreams(inputFilePath);
+    const audioStart = streams.audio.length < 2 ? await probeAudioStart(inputFilePath) : null;
     let fixedAudioPath: string | null = null;
-    if (audioStart !== null && audioStart > 0.5) {
+    if (audioStart !== null && audioStart > 0.5 && streams.audio.length < 2) {
       await log('warn', `The audio only starts ${audioStart.toFixed(1)} s into the video. Silence is added before it so the stream plays in every browser.`);
       fixedAudioPath = path.join(tempDir, 'audio_padded.m4a');
       await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-vn', '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-ac', '2', '-b:a', '192k', fixedAudioPath]);
+    }
+
+    // Several audio languages: each becomes its own audio-only stream the player can switch between, and
+    // the video renditions carry no sound. Each track is rebuilt first (stereo AAC, silence in front of
+    // late audio), which also fixes tracks that start late.
+    const multiAudio = streams.audio.length >= 2;
+    const audioInputs: string[] = [];
+    let audioTracks: AudioTrack[] | undefined;
+    if (multiAudio) {
+      const labels = uniqueLabels(streams.audio.map((a, i) => trackLabel(a.title, a.language, `Audio ${i + 1}`)));
+      audioTracks = streams.audio.map((a, i) => ({ id: `a${i}`, language: resolveLanguage(a.language).code, label: labels[i] }));
+      await log('info', `Found ${audioTracks.length} audio tracks: ${labels.join(', ')}`);
+      for (let i = 0; i < streams.audio.length; i++) {
+        await assertNotStopped();
+        const out = path.join(tempDir, `audio_${i}.m4a`);
+        await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-vn', '-map', `0:${streams.audio[i].index}`, '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-ac', '2', '-b:a', '160k', out]);
+        audioInputs.push(out);
+      }
     }
 
     // Step C: Decide which renditions to make.
@@ -349,6 +413,8 @@ async function executeTranscoding() {
     if (hasWatermark) ffmpegArgs.push('-i', watermarkPath);
     if (fixedAudioPath) ffmpegArgs.push('-i', fixedAudioPath);
     const audioMap = fixedAudioPath ? `${hasWatermark ? 2 : 1}:a:0` : '0:a:0?';
+    const firstExtraInput = 1 + (hasWatermark ? 1 : 0) + (fixedAudioPath ? 1 : 0);
+    for (const a of audioInputs) ffmpegArgs.push('-i', a);
 
     // Lanczos keeps upscaled frames as sharp as scaling can make them
     const scaleFilter = (v: HlsVariant) => {
@@ -367,16 +433,14 @@ async function executeTranscoding() {
 
     eligibleVariants.forEach((v, i) => {
       ffmpegArgs.push(
-        '-map', `[o${i}]`, '-map', audioMap,
+        '-map', `[o${i}]`, ...(multiAudio ? ['-an'] : ['-map', audioMap]),
         '-c:v', 'libx264',
         '-preset', x264Preset,
         '-pix_fmt', 'yuv420p', // 8-bit: browsers cannot play 10-bit H.264 ("High 10"), which 10-bit sources produce by default
         '-crf', crf,
         '-maxrate', v.videoBitrate,
         '-bufsize', `${parseInt(v.videoBitrate, 10) * 2}k`,
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-b:a', v.audioBitrate,
+        ...(multiAudio ? [] : ['-c:a', 'aac', '-ac', '2', '-b:a', v.audioBitrate]),
         '-g', gopSize.toString(),
         '-keyint_min', gopSize.toString(),
         '-sc_threshold', '0',
@@ -384,6 +448,18 @@ async function executeTranscoding() {
         '-hls_playlist_type', 'vod',
         '-hls_segment_filename', path.join(outputDir, `output_${v.label}_%03d.ts`),
         path.join(outputDir, `playlist_${v.label}.m3u8`)
+      );
+    });
+
+    // One audio-only stream per language (copied from the rebuilt tracks, so no second encode)
+    audioInputs.forEach((_, i) => {
+      ffmpegArgs.push(
+        '-map', `${firstExtraInput + i}:a:0`,
+        '-c:a', 'copy',
+        '-hls_time', '6',
+        '-hls_playlist_type', 'vod',
+        '-hls_segment_filename', path.join(outputDir, `audio_${i}_%03d.ts`),
+        path.join(outputDir, `audio_${i}.m3u8`)
       );
     });
 
@@ -436,6 +512,26 @@ async function executeTranscoding() {
     }
     await dbService.updateVideo(videoId, { progress: 83 });
 
+    // Step E1: Subtitles inside the upload (text kinds only) become WebVTT files next to the video
+    const embedded: TextTrack[] = [];
+    if (streams.subs.length > 0) {
+      const labels = uniqueLabels(streams.subs.map((x, i) => trackLabel(x.title, x.language, `Subtitles ${i + 1}`)));
+      for (let i = 0; i < streams.subs.length; i++) {
+        const file = `subs_${i}.vtt`;
+        try {
+          await runFfmpeg(['-y', '-nostdin', '-i', inputFilePath, '-map', `0:${streams.subs[i].index}`, '-c:s', 'webvtt', path.join(outputDir, file)]);
+          embedded.push({ id: `e${i}`, language: resolveLanguage(streams.subs[i].language).code, label: labels[i], key: `${outputKeyPrefix}/${file}`, source: 'embedded' });
+        } catch (subErr: any) {
+          if (subErr instanceof AbortedError) throw subErr;
+          await log('warn', `Could not read subtitle track ${i + 1}: ${subErr.message.slice(0, 120)}`);
+        }
+      }
+      if (embedded.length) await log('info', `Extracted ${embedded.length} subtitle track(s): ${embedded.map((t) => t.label).join(', ')}`);
+    }
+    if (streams.pictureSubs > 0) {
+      await log('warn', `${streams.pictureSubs} picture-based subtitle track(s) were skipped: they cannot be converted to text. Upload an .srt or .vtt instead.`);
+    }
+
     // Step E2: Optional placeholder WebVTT track. Off by default: these are sample lines, not real
     // captions, so they must not appear on a public site unless someone deliberately turns them on.
     const subtitleFileName = 'subtitles_en.vtt';
@@ -468,8 +564,15 @@ Enjoy smooth resolution switching and clear captions!
     Logger.info(`Transcoder Task: Writing master HLS playlist manifest...`);
     let masterPlaylistContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
     
+    if (audioTracks) {
+      const defaultIndex = Math.max(0, streams.audio.findIndex((a) => a.isDefault));
+      audioTracks.forEach((t, i) => {
+        const name = t.label.replace(/"/g, "'");
+        masterPlaylistContent += `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="${name}"${t.language !== 'und' ? `,LANGUAGE="${t.language}"` : ''},DEFAULT=${i === defaultIndex ? 'YES' : 'NO'},AUTOSELECT=YES,CHANNELS="2",URI="audio_${i}.m3u8"\n`;
+      });
+    }
     for (const variant of eligibleVariants) {
-      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${sizes.get(variant.label)!.w}x${sizes.get(variant.label)!.h}\n`;
+      masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${variant.bandwidth},RESOLUTION=${sizes.get(variant.label)!.w}x${sizes.get(variant.label)!.h}${audioTracks ? ',AUDIO="aud"' : ''}\n`;
       masterPlaylistContent += `playlist_${variant.label}.m3u8\n`;
     }
 
@@ -533,9 +636,15 @@ Enjoy smooth resolution switching and clear captions!
     // A pause/delete that arrived during the upload must not be overwritten by "completed"
     await assertNotStopped();
 
+    // Subtitles an admin uploaded are kept; the ones found in the file are replaced by this run's
+    const latest = await dbService.getVideo(videoId);
+    const textTracks = [...(latest?.textTracks || []).filter((t) => t.source === 'upload'), ...embedded];
+
     await dbService.updateVideo(videoId, {
       status: VideoStatus.COMPLETED,
       progress: 100,
+      audioTracks,
+      textTracks: textTracks.length ? textTracks : undefined,
       hlsPlaylistUrl,
       thumbnailUrl,
       subtitleUrl,

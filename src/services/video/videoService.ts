@@ -7,9 +7,11 @@ import { Logger } from '../../utils/logger';
 import { HttpError } from '../../utils/responseHandler';
 import { cdnService } from '../cdn/cdnService';
 import { clearPublishedCache } from './publishedCache';
-import { seriesService, parseSeasonNumber, parseEpisodeNumber } from '../series/seriesService';
+import { seriesService, parseSeasonNumber, parseEpisodeNumber, parseCategory } from '../series/seriesService';
 import { publicUrlFor } from '../storage/publicUrl';
 import * as thumbs from '../thumbnail/thumbnailService';
+import * as subs from '../subtitles/subtitleService';
+import { resolveLanguage } from '../../utils/languages';
 
 // What the public site may know about a video. Nothing about jobs, errors, storage keys or sizes.
 export interface PublicVideo {
@@ -18,6 +20,12 @@ export interface PublicVideo {
   thumbnailUrl?: string;
   hlsPlaylistUrl: string;
   subtitleUrl?: string;
+  /** "anime" when the title belongs under Anime rather than Movies */
+  category?: string;
+  /** Audio languages, in the order of the stream's audio menu (only when there are several) */
+  audioTracks?: Array<{ id: string; language: string; label: string }>;
+  /** Subtitles the viewer can switch on */
+  textTracks?: Array<{ id: string; language: string; label: string; url: string }>;
   duration: number;
   width: number;
   height: number;
@@ -49,6 +57,7 @@ export interface PublicSeries {
   id: string;
   title: string;
   description?: string;
+  category?: string;
   posterUrl?: string;
   seasonCount: number;
   episodeCount: number;
@@ -232,7 +241,7 @@ export class VideoService {
     return updated;
   }
 
-  async updateSettings(id: string, input: { title?: unknown; qualities?: unknown; autoPublish?: unknown; allowUpscale?: unknown }): Promise<VideoRecord> {
+  async updateSettings(id: string, input: { title?: unknown; qualities?: unknown; autoPublish?: unknown; allowUpscale?: unknown; category?: unknown }): Promise<VideoRecord> {
     const video = await dbService.getVideo(id);
     if (!video) throw new HttpError(`Video with ID ${id} not found`, 404, 'NOT_FOUND');
 
@@ -249,6 +258,10 @@ export class VideoService {
     if (input.autoPublish !== undefined) {
       updates.autoPublish = input.autoPublish === true;
       changes.push('auto-publish');
+    }
+    if (input.category !== undefined) {
+      updates.category = parseCategory(input.category);
+      changes.push('section');
     }
     if (input.allowUpscale !== undefined) {
       updates.allowUpscale = input.allowUpscale === true;
@@ -301,6 +314,8 @@ export class VideoService {
       thumbnailUrl: undefined,
       subtitleUrl: undefined,
       renditions: undefined,
+      audioTracks: undefined,
+      textTracks: video.textTracks?.filter((t) => t.source === 'upload'),
     });
     await dbService.appendEvent(id, 'warn', 'Processed files deleted by an admin. The original is kept; resume to process it again.');
     return updated;
@@ -343,7 +358,9 @@ export class VideoService {
   // The video as a client should see it: CDN addresses, and the admin's own thumbnail if one was set
   private applyCdnUrls(video: VideoRecord): VideoRecord {
     const withCdn = this.withCdnUrls(video);
-    return video.customThumbnailKey ? { ...withCdn, thumbnailUrl: publicUrlFor(video.customThumbnailKey) } : withCdn;
+    const base = video.customThumbnailKey ? { ...withCdn, thumbnailUrl: publicUrlFor(video.customThumbnailKey) } : withCdn;
+    // Each subtitle gets the address clients should load it from
+    return video.textTracks ? { ...base, textTracks: video.textTracks.map((t) => ({ ...t, url: publicUrlFor(t.key) })) } : base;
   }
 
   /** Same as above, for code outside this class (live updates) */
@@ -417,6 +434,7 @@ export class VideoService {
 
     // 3. Delete the admin's custom thumbnail, if any
     await thumbs.removeAllThumbnails(id);
+    await subs.removeAllSubtitles(id);
 
     // 4. Delete from DB
     await dbService.deleteVideo(id);
@@ -473,6 +491,63 @@ export class VideoService {
     const updated = await dbService.updateVideo(id, { customThumbnailKey: undefined });
     await thumbs.removeThumbnail(video.customThumbnailKey);
     await dbService.appendEvent(id, 'info', 'Thumbnail reset to the automatic one');
+    return this.applyCdnUrls(updated);
+  }
+
+  // ─── Subtitles and audio track names ────────────────────────
+
+  private nextTrackId(tracks: Array<{ id: string }>, prefix: string): string {
+    let n = tracks.length;
+    while (tracks.some((t) => t.id === `${prefix}${n}`)) n++;
+    return `${prefix}${n}`;
+  }
+
+  // Add a subtitle file (SRT or WebVTT) in a language. It is stored apart from the video's processed files,
+  // so it survives reprocessing, and it works at once with no encoding.
+  async addSubtitle(id: string, input: { language?: unknown; label?: unknown; file: Buffer }): Promise<VideoRecord> {
+    const video = await this.requireVideo(id);
+    const language = resolveLanguage(typeof input.language === 'string' ? input.language : '');
+    const given = typeof input.label === 'string' ? input.label.trim().replace(/\s+/g, ' ') : '';
+    if (given.length > 40) throw new HttpError('The name must be 40 characters or fewer', 400, 'INVALID_LABEL');
+    const label = given || language.name || 'Subtitles';
+    const tracks = video.textTracks || [];
+    if (tracks.length >= 12) throw new HttpError('A video can have up to 12 subtitle tracks', 409, 'TOO_MANY_TRACKS');
+
+    const vtt = subs.toVtt(input.file);
+    const trackId = this.nextTrackId(tracks, 's');
+    const key = await subs.storeSubtitle(id, trackId, vtt);
+    const updated = await dbService.updateVideo(id, {
+      textTracks: [...tracks, { id: trackId, language: language.code, label, key, source: 'upload' }],
+    });
+    await dbService.appendEvent(id, 'info', `Subtitles added by an admin: ${label}`);
+    return this.applyCdnUrls(updated);
+  }
+
+  async removeSubtitle(id: string, trackId: string): Promise<VideoRecord> {
+    const video = await this.requireVideo(id);
+    const track = (video.textTracks || []).find((t) => t.id === trackId);
+    if (!track) throw new HttpError('That subtitle track does not exist', 404, 'TRACK_NOT_FOUND');
+    const updated = await dbService.updateVideo(id, { textTracks: (video.textTracks || []).filter((t) => t.id !== trackId) });
+    await subs.removeSubtitle(track.key);
+    await dbService.appendEvent(id, 'info', `Subtitles removed by an admin: ${track.label}`);
+    return this.applyCdnUrls(updated);
+  }
+
+  // Rename what viewers see in the Audio or Subtitles menu ("Track 2" -> "Hindi")
+  async renameTrack(id: string, trackId: string, label: unknown): Promise<VideoRecord> {
+    const video = await this.requireVideo(id);
+    const name = typeof label === 'string' ? label.trim().replace(/\s+/g, ' ') : '';
+    if (!name || name.length > 40) throw new HttpError('Give the track a name of 1 to 40 characters', 400, 'INVALID_LABEL');
+    const audio = video.audioTracks || [];
+    const text = video.textTracks || [];
+    let updated: VideoRecord;
+    if (audio.some((t) => t.id === trackId)) {
+      updated = await dbService.updateVideo(id, { audioTracks: audio.map((t) => (t.id === trackId ? { ...t, label: name } : t)) });
+    } else if (text.some((t) => t.id === trackId)) {
+      updated = await dbService.updateVideo(id, { textTracks: text.map((t) => (t.id === trackId ? { ...t, label: name } : t)) });
+    } else {
+      throw new HttpError('That track does not exist', 404, 'TRACK_NOT_FOUND');
+    }
     return this.applyCdnUrls(updated);
   }
 
@@ -550,6 +625,22 @@ export class VideoService {
       .sort((a, b) => (a.seasonNumber! - b.seasonNumber!) || (a.episodeNumber! - b.episodeNumber!));
   }
 
+  // Change a season's number: the season and every episode in it move together ("Season 1" -> "Season 2")
+  async renumberSeason(seriesId: string, from: number, to: number): Promise<Series> {
+    const series = await seriesService.require(seriesId);
+    const episodes = await this.episodesOf(seriesId);
+    const moving = episodes.filter((e) => e.seasonNumber === from);
+    if (!series.seasons.includes(from) && moving.length === 0) throw new HttpError('That season does not exist', 404, 'SEASON_NOT_FOUND');
+    if (from === to) return series;
+    if (episodes.some((e) => e.seasonNumber === to)) {
+      throw new HttpError(`${to === 0 ? 'Specials' : `Season ${to}`} already has episodes. Pick another number.`, 409, 'SEASON_EXISTS');
+    }
+    const updated = await seriesService.renumberSeason(seriesId, from, to);
+    for (const e of moving) await dbService.updateVideo(e.id, { seasonNumber: to });
+    clearPublishedCache();
+    return updated;
+  }
+
   // Episodes as the admin sees them (CDN-applied thumbnails etc.), in order
   async episodesForAdmin(seriesId: string): Promise<VideoRecord[]> {
     return (await this.episodesOf(seriesId)).map((v) => this.applyCdnUrls(v));
@@ -589,6 +680,9 @@ export class VideoService {
       thumbnailUrl: v.thumbnailUrl,
       hlsPlaylistUrl: v.hlsPlaylistUrl!,
       subtitleUrl: v.subtitleUrl,
+      category: v.category,
+      audioTracks: v.audioTracks && v.audioTracks.length > 1 ? v.audioTracks : undefined,
+      textTracks: v.textTracks && v.textTracks.length ? v.textTracks.map((t: any) => ({ id: t.id, language: t.language, label: t.label, url: t.url })) : undefined,
       duration: v.metadata?.duration || 0,
       width: v.metadata?.width || 0,
       height: v.metadata?.height || 0,
@@ -625,6 +719,7 @@ export class VideoService {
       id: series.id,
       title: series.title,
       description: series.description,
+      category: series.category,
       posterUrl: series.posterKey ? publicUrlFor(series.posterKey) : ordered.length ? this.toPublic(ordered.find((e) => e.thumbnailUrl) || ordered[0]).thumbnailUrl : undefined,
       seasonCount: seasons.length,
       episodeCount: ordered.length,
