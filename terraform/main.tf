@@ -116,7 +116,7 @@ resource "aws_sqs_queue" "transcode_dlq" {
 # â”€â”€â”€ Main Transcode Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 resource "aws_sqs_queue" "transcode_queue" {
   name                       = "${var.project_name}-${var.environment}-${var.queue_name}"
-  visibility_timeout_seconds = 3600 # 1 hour: the worker holds the message while the transcoder task runs
+  visibility_timeout_seconds = 21600 # 6 hours: the worker holds the message while the transcoder task runs
   message_retention_seconds  = 86400 # 1 day
 
   redrive_policy = jsonencode({
@@ -553,7 +553,8 @@ resource "aws_instance" "server" {
   # Changing the startup script must not replace a server that may be encoding. To change its settings
   # or update the app, run the update steps on the running server instead (see docs/DEPLOY_AWS.md).
   lifecycle {
-    ignore_changes = [user_data]
+    # ami: Amazon publishes a new base image every few weeks; that must not replace the running server either
+    ignore_changes = [user_data, ami]
   }
 
   tags = {
