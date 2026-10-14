@@ -98,6 +98,10 @@ const serveAdmin = mode !== 'user';
 
 // 2. Setup Express App
 const app = express();
+// Behind proxies (Caddy on the server, CloudFront in front of the website) the visitor's address is in
+// X-Forwarded-For. TRUST_PROXY_HOPS says how many proxies to trust, so rate limits apply per visitor.
+const proxyHops = parseInt(process.env.TRUST_PROXY_HOPS || '0', 10);
+if (proxyHops > 0) app.set('trust proxy', proxyHops);
 // Each app has its own port when run on its own (USER_PORT / ADMIN_PORT); PORT is used otherwise
 const port = parseInt((mode === 'user' ? process.env.USER_PORT : mode === 'admin' ? process.env.ADMIN_PORT : '') || process.env.PORT || '5000', 10);
 const webRoot = path.join(__dirname, '..', 'web');
