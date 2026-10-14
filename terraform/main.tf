@@ -487,7 +487,8 @@ locals {
   ])
 
   # Where each app is reached. Domains get automatic HTTPS from Caddy; without them: user on :80, admin on :8080
-  user_url  = var.user_domain != "" ? "https://${var.user_domain}/" : "http://${aws_eip.server.public_ip}/"
+  # Without a domain, viewers use the website's CloudFront address (HTTPS)
+  user_url  = var.user_domain != "" ? "https://${var.user_domain}/" : "https://${aws_cloudfront_distribution.website.domain_name}/"
   admin_url = var.admin_domain != "" ? "https://${var.admin_domain}/admin/" : "http://${aws_eip.server.public_ip}:8080/admin/"
 
   caddyfile = join("\n", [

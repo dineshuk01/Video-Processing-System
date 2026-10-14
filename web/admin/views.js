@@ -997,7 +997,7 @@
           <div class="video-wrap">
             <video id="hls-video" controls playsinline preload="metadata"
                    ${subTracks.length ? 'crossorigin="anonymous"' : ''}
-                   ${video.thumbnailUrl ? `poster="${esc(video.thumbnailUrl)}"` : ''}>
+                   ${!video.thumbnailUrl ? '' : subTracks.length ? `style="background: #000 url('${esc(video.thumbnailUrl)}') center / contain no-repeat"` : `poster="${esc(video.thumbnailUrl)}"`}>
               ${subTracks.map((t) => `<track kind="subtitles" label="${esc(t.label)}" ${/^[a-z]{2,3}$/.test(t.language) ? `srclang="${t.language}"` : ''} src="${esc(t.url)}">`).join('')}
             </video>
             <div class="player-overlay" id="overlay-buffering" aria-hidden="true"><div class="spinner"></div></div>
