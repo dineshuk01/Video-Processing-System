@@ -239,7 +239,7 @@ docs/                    design and deployment documents, screenshots
 | Viewer accounts | `POST /api/auth/signup`, `/login`, `/logout`, `/google`; `GET /api/auth/me`, `/config` |
 | Viewer data | `GET /api/me`; `PUT /api/me/list`; `PUT/DELETE /api/me/progress/:videoId` |
 | Catalogue (signed in) | `GET /api/public/videos`, `/videos/:id`, `/series`, `/series/:id` |
-| Admin | uploads, videos, publish, pause/resume/retry, thumbnails, subtitles, series and seasons, logs, queue, system: see [docs/HLD.md](docs/HLD.md#16-api-overview) |
+| Admin | uploads, videos, publish, pause/resume/retry, thumbnails, subtitles, series and seasons, logs, queue, system: see [docs/HLD.md](docs/HLD.md#17-api-overview) |
 
 Every response is `{ "success": true, "data": ... }` or `{ "success": false, "error": { "message", "code" } }`.
 
