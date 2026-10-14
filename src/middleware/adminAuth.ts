@@ -62,7 +62,7 @@ function verifyToken(token: string | undefined): boolean {
   return Number(expires) > Date.now();
 }
 
-function readCookie(req: Request, name: string): string | undefined {
+export function readCookie(req: Request, name: string): string | undefined {
   const header = req.headers.cookie;
   if (!header) return undefined;
   for (const part of header.split(';')) {

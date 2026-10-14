@@ -4,6 +4,7 @@ import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { ResponseHandler } from '../utils/responseHandler';
 import { isAdminRequest } from '../middleware/adminAuth';
+import { loginRequired, sessionEmail } from '../middleware/userAuth';
 import { dbService } from '../services/db/dbService';
 import { videoService } from '../services/video/videoService';
 import { seriesService } from '../services/series/seriesService';
@@ -182,6 +183,10 @@ router.get(
       // The public may only read the processed output of published videos. Raw uploads and
       // unpublished videos are admin-only, and look "not found" to everyone else.
       if (!isAdminRequest(req)) {
+        // Viewers must be signed in to stream anything
+        if (loginRequired() && !sessionEmail(req)) {
+          return ResponseHandler.error(res, 'Please log in to continue', 401, 'LOGIN_REQUIRED');
+        }
         const publicBucket = process.env.LOCAL_S3_PUBLIC_BUCKET;
         const match = bucket === publicBucket ? /^(?:processed|thumbnails|subtitles)\/([^/]+)\//.exec(key) : null;
         if (!match || !(await isPublishedVideo(match[1]))) {

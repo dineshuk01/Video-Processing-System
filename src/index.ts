@@ -18,6 +18,8 @@ import metricsRouter from './routes/metrics';
 import adminRouter from './routes/admin';
 import adminSeriesRouter from './routes/adminSeries';
 import publicRouter from './routes/public';
+import { authRouter, meRouter } from './routes/account';
+import { requireUser } from './middleware/userAuth';
 import { adminAuthRouter, requireAdmin, warnIfAdminOpen } from './middleware/adminAuth';
 import { publicLimiter } from './middleware/rateLimiter';
 import { cleanupService } from './services/cleanup/cleanupService';
@@ -119,7 +121,13 @@ app.get('/health', (req: express.Request, res: express.Response) => {
 
 // ─── Public side ─────────────────────────────────────────────
 if (serveUser) {
-  app.use('/api/public', publicLimiter, publicRouter);
+  // Viewers sign up / log in; everything they can see or stream needs a signed-in account
+  // Per-person answers: never stored by shared caches, and re-checked by the browser after sign-out
+  const personal = (_req: express.Request, res: express.Response, next: express.NextFunction) => { res.setHeader('Cache-Control', 'private, no-cache'); next(); };
+  app.use(['/api/auth', '/api/me', '/api/public'], personal);
+  app.use('/api/auth', authRouter);
+  app.use('/api/me', publicLimiter, meRouter);
+  app.use('/api/public', publicLimiter, requireUser, publicRouter);
 }
 
 // Media (HLS output, posters). The local stand-in for S3/CloudFront: the public can only read the

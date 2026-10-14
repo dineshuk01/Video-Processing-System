@@ -91,3 +91,8 @@ output "cdn_base_url" {
   description = "Full CDN base URL to set as CDN_BASE_URL env var"
   value       = var.enable_cdn ? "https://${aws_cloudfront_distribution.hls_cdn[0].domain_name}" : ""
 }
+
+output "users_table_name" {
+  description = "DynamoDB table holding viewer accounts, My List and watch progress"
+  value       = aws_dynamodb_table.users.name
+}

@@ -1,15 +1,15 @@
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Video Processing System â€” AWS Infrastructure (Terraform)
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
+# Video Processing System — AWS Infrastructure (Terraform)
+# ─────────────────────────────────────────────────────────────────
 # This module provisions the complete AWS backend:
-#   â€¢ S3 buckets (raw uploads + HLS public)
-#   â€¢ SQS queue + Dead Letter Queue
-#   â€¢ One small EC2 server (website, admin, queue worker)
-#   â€¢ ECS Fargate cluster + one-shot transcoder task (runs only while a video encodes)
-#   â€¢ DynamoDB table for video records
-#   â€¢ IAM roles and policies
-#   â€¢ CloudFront CDN distribution (optional)
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#   • S3 buckets (raw uploads + HLS public)
+#   • SQS queue + Dead Letter Queue
+#   • One small EC2 server (website, admin, queue worker)
+#   • ECS Fargate cluster + one-shot transcoder task (runs only while a video encodes)
+#   • DynamoDB table for video records
+#   • IAM roles and policies
+#   • CloudFront CDN distribution (optional)
+# ─────────────────────────────────────────────────────────────────
 
 terraform {
   required_version = ">= 1.5.0"
@@ -34,11 +34,11 @@ provider "aws" {
   }
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # S3 BUCKETS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 
-# â”€â”€â”€ Raw Upload Bucket (Temporary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Raw Upload Bucket (Temporary) ──────────────────────────────
 resource "aws_s3_bucket" "raw_uploads" {
   bucket = "${var.project_name}-${var.environment}-${var.raw_bucket_name}"
 }
@@ -79,7 +79,7 @@ resource "aws_s3_bucket_public_access_block" "raw_block" {
   restrict_public_buckets = true
 }
 
-# â”€â”€â”€ Public HLS Bucket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Public HLS Bucket ──────────────────────────────────────────
 resource "aws_s3_bucket" "hls_public" {
   bucket = "${var.project_name}-${var.environment}-${var.public_bucket_name}"
 }
@@ -103,17 +103,17 @@ resource "aws_s3_bucket_public_access_block" "hls_block" {
   restrict_public_buckets = true
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # SQS QUEUES
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 
-# â”€â”€â”€ Dead Letter Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Dead Letter Queue ──────────────────────────────────────────
 resource "aws_sqs_queue" "transcode_dlq" {
   name                      = "${var.project_name}-${var.environment}-${var.dlq_name}"
   message_retention_seconds = 1209600 # 14 days
 }
 
-# â”€â”€â”€ Main Transcode Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Main Transcode Queue ──────────────────────────────────────
 resource "aws_sqs_queue" "transcode_queue" {
   name                       = "${var.project_name}-${var.environment}-${var.queue_name}"
   visibility_timeout_seconds = 21600 # 6 hours: the worker holds the message while the transcoder task runs
@@ -125,9 +125,9 @@ resource "aws_sqs_queue" "transcode_queue" {
   })
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # DYNAMODB (video records)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 
 resource "aws_dynamodb_table" "videos" {
   name         = "${var.project_name}-${var.environment}-${var.dynamodb_table_name}"
@@ -158,11 +158,34 @@ resource "aws_dynamodb_table" "videos" {
   }
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# IAM ROLES & POLICIES
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─── Viewer accounts (a table of their own) ────────────────────
+# pk = "USER#<email>"; sk = "PROFILE" (name, password hash), "LIST" (My List) or "PROGRESS#<videoId>"
+resource "aws_dynamodb_table" "users" {
+  name         = "${var.project_name}-${var.environment}-users"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pk"
+  range_key    = "sk"
 
-# â”€â”€â”€ ECS Task Execution Role (pull images, write logs) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true # accounts are worth being able to restore
+  }
+}
+
+# ═════════════════════════════════════════════════════════════════
+# IAM ROLES & POLICIES
+# ═════════════════════════════════════════════════════════════════
+
+# ─── ECS Task Execution Role (pull images, write logs) ─────────
 resource "aws_iam_role" "ecs_execution_role" {
   name = "${var.project_name}-${var.environment}-ecs-execution"
 
@@ -181,7 +204,7 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# â”€â”€â”€ ECS Task Role (app-level access to S3, SQS) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── ECS Task Role (app-level access to S3, SQS) ──────────────
 resource "aws_iam_role" "ecs_task_role" {
   name = "${var.project_name}-${var.environment}-ecs-task"
 
@@ -254,7 +277,8 @@ resource "aws_iam_policy" "app_policy" {
         ]
         Resource = [
           aws_dynamodb_table.videos.arn,
-          "${aws_dynamodb_table.videos.arn}/index/*"
+          "${aws_dynamodb_table.videos.arn}/index/*",
+          aws_dynamodb_table.users.arn
         ]
       },
       {
@@ -277,9 +301,9 @@ resource "aws_iam_role_policy_attachment" "task_app_policy" {
   policy_arn = aws_iam_policy.app_policy.arn
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # ECS (encoding only)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # Nothing runs on ECS between videos: the server's worker starts one Fargate task per video
 # (RunTask), waits for it to finish and the task then stops. You pay per second while it encodes.
 
@@ -350,9 +374,9 @@ resource "aws_security_group" "ecs_tasks" {
   }
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # SERVER (EC2): website + admin + queue worker
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 
 data "aws_ssm_parameter" "al2023_ami" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
@@ -446,6 +470,8 @@ locals {
     "AWS_S3_PUBLIC_BUCKET=${aws_s3_bucket.hls_public.id}",
     "AWS_SQS_QUEUE_URL=${aws_sqs_queue.transcode_queue.url}",
     "DYNAMODB_TABLE_NAME=${aws_dynamodb_table.videos.name}",
+    "USERS_TABLE_NAME=${aws_dynamodb_table.users.name}",
+    "USER_SESSION_SECRET=${var.user_session_secret}",
     "ECS_CLUSTER_NAME=${aws_ecs_cluster.main.name}",
     "ECS_TASK_DEFINITION=${var.project_name}-${var.environment}-transcoder",
     "ECS_CONTAINER_NAME=transcoder",
@@ -573,11 +599,11 @@ resource "aws_eip_association" "server" {
   allocation_id = aws_eip.server.id
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # CLOUDFRONT CDN (Optional)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 
-# Origin Access Identity for CloudFront â†’ S3
+# Origin Access Identity for CloudFront → S3
 resource "aws_cloudfront_origin_access_identity" "oai" {
   count   = var.enable_cdn ? 1 : 0
   comment = "${var.project_name} HLS CDN OAI"
@@ -648,9 +674,9 @@ resource "aws_cloudfront_distribution" "hls_cdn" {
   }
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 # DNS (optional): records for the two domains, when the domain is hosted in Route 53
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════
 
 resource "aws_route53_record" "user" {
   count   = var.route53_zone_id != "" && var.user_domain != "" ? 1 : 0

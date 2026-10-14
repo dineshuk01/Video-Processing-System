@@ -62,6 +62,18 @@ The public site has three sections. A standalone video is a **Movie**; a series 
 
 A new series starts with Season 1; the **New series** form has a **First season number** if you are starting with a later season (0 is for specials). On the series page each season has **Change number**, which renumbers the season and moves all of its episodes with it (refused if that number is already a season of the series). API: `firstSeason` on `POST /api/admin/series`, and `PATCH /api/admin/series/:id/seasons/:number` with `{ "number": 2 }`.
 
+## Viewer accounts
+
+The user site needs an account: visitors see a sign-in page and can create an account with their name, email and password. Nothing (the catalogue, the video files) is available without signing in; set `REQUIRE_LOGIN=false` only for a private test setup.
+
+- **Each person has their own session**: a signed, HttpOnly cookie valid for 30 days (`USER_SESSION_SECRET` signs it). Signing out ends it.
+- **Saved per account**: name, email, password (stored as a salted scrypt hash, never in plain text), My List, and how far each video was watched, which also drives Continue Watching and the watch history. They follow the viewer to any device. Playback speed and the chosen subtitle/audio language stay on the device.
+- **Storage**: `users.json` locally; on AWS a DynamoDB table of its own (`USERS_TABLE_NAME`), keyed by `USER#<email>` with one item for the profile, one for My List and one per watched video.
+- **Protection**: wrong email and wrong password give the same answer; sign-up and sign-in are limited to 20 attempts per 15 minutes per address.
+- On AWS the video files themselves are served by CloudFront and are not yet tied to the session: the catalogue and stream addresses need a login, but a stream address that is passed on keeps working. Signed CloudFront cookies would close this; they need the site on its own domain.
+
+API: `POST /api/auth/signup` `{ name, email, password }`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`; `GET /api/me`, `PUT /api/me/list` `{ items }`, `PUT /api/me/progress/:videoId` `{ pos, seen, watched }`, `DELETE /api/me/progress[/:videoId]`.
+
 ## Admin sign-in
 
 Set `ADMIN_API_KEY` (see `.env.example`). The admin app asks for it and keeps a signed, HttpOnly session cookie. Scripts can send it as an `x-admin-key` header.
