@@ -160,3 +160,10 @@ variable "dynamodb_table_name" {
   type        = string
   default     = "videos"
 }
+
+variable "user_session_secret" {
+  description = "Signs viewers' login cookies (32+ random characters). Changing it signs everyone out"
+  type        = string
+  sensitive   = true
+  default     = ""
+}

@@ -38,6 +38,88 @@
     del: (k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } },
   };
 
+  // ─── Account ───────────────────────────────────────────────
+  // My List, the watch history and where each video was left are saved to the viewer's account, so
+  // they follow them to any device. Preferences (speed, subtitle and audio language) stay on the device.
+  const account = { user: null, list: [], progress: {} };
+
+  function accountApi(url, method, body) {
+    return fetch(url, { method, keepalive: true, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
+      .then((res) => { if (res.status === 401) showSignedOut(); return res; })
+      .catch(() => { /* offline: the next change sends the latest state anyway */ });
+  }
+
+  // Progress changes every couple of seconds while playing; send them at most every 10 s (and when leaving)
+  let pendingProgress = {};
+  let progressTimer = null;
+  function flushProgress() {
+    clearTimeout(progressTimer);
+    progressTimer = null;
+    const batch = pendingProgress;
+    pendingProgress = {};
+    Object.keys(batch).forEach((id) => accountApi(`/api/me/progress/${encodeURIComponent(id)}`, 'PUT', batch[id]));
+  }
+  function queueProgress(id, patch) {
+    pendingProgress[id] = { ...(pendingProgress[id] || {}), ...patch };
+    if (!progressTimer) progressTimer = setTimeout(flushProgress, 10000);
+  }
+  window.addEventListener('pagehide', flushProgress);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress(); });
+
+  const historyEntries = () => Object.entries(account.progress)
+    .filter(([, p]) => p.seen).sort((a, b) => b[1].seen - a[1].seen).map(([id, p]) => ({ id, at: p.seen }));
+  function forget(id) {
+    delete account.progress[id];
+    delete pendingProgress[id];
+    accountApi(`/api/me/progress/${encodeURIComponent(id)}`, 'DELETE');
+  }
+  function setProgressField(id, field, value) {
+    account.progress[id] = { ...(account.progress[id] || {}), [field]: value };
+    queueProgress(id, { [field]: value });
+  }
+
+  // Same get/set/del shape as `storage`, for the keys that belong to the account
+  const userStore = {
+    get(key) {
+      if (key === 'vs-list') return JSON.stringify(account.list);
+      if (key === 'vs-history') return JSON.stringify(historyEntries());
+      const m = /^vs-(pos|seen|watched)-(.+)$/.exec(key);
+      if (!m) return null;
+      const p = account.progress[m[2]];
+      if (!p) return null;
+      if (m[1] === 'watched') return p.watched ? '1' : null;
+      return p[m[1]] ? String(p[m[1]]) : null;
+    },
+    set(key, value) {
+      if (key === 'vs-list') {
+        account.list = JSON.parse(value);
+        accountApi('/api/me/list', 'PUT', { items: account.list });
+        return;
+      }
+      if (key === 'vs-history') {
+        const next = JSON.parse(value);
+        const keep = new Set(next.map((h) => h.id));
+        historyEntries().forEach((h) => { if (!keep.has(h.id)) forget(h.id); });
+        next.forEach((h) => { if ((account.progress[h.id] || {}).seen !== h.at) setProgressField(h.id, 'seen', h.at); });
+        return;
+      }
+      const m = /^vs-(pos|seen|watched)-(.+)$/.exec(key);
+      if (!m) return;
+      if (m[1] === 'watched') setProgressField(m[2], 'watched', true);
+      else setProgressField(m[2], m[1], Number(value) || 0);
+    },
+    del(key) {
+      if (key === 'vs-history') {
+        account.progress = {};
+        pendingProgress = {};
+        accountApi('/api/me/progress', 'DELETE');
+        return;
+      }
+      const m = /^vs-(pos|watched)-(.+)$/.exec(key);
+      if (m) setProgressField(m[2], m[1], m[1] === 'pos' ? 0 : false);
+    },
+  };
+
   // The API already returns display-ready fields (title, duration, height, publishedAt)
   const titleOf = (v) => v.title;
   const height = (v) => v.height || 0;
@@ -59,18 +141,18 @@
   const seriesLibrary = () => [...state.series].sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
   // Any playable thing the viewer can have in history / lists: a movie or an episode
   const itemById = (id) => state.videos[id] || state.episodes[id] || null;
-  const savedPos = (id) => parseFloat(storage.get(`vs-pos-${id}`));
+  const savedPos = (id) => parseFloat(userStore.get(`vs-pos-${id}`));
   const unfinished = (v) => { const pos = savedPos(v.id); return pos > 5 && seconds(v) && pos < seconds(v) - 5 ? pos : 0; };
 
   // What the Play button of a series should do. `kind` says why: resume an unfinished episode, go
   // back to one that was started, move on after a finished episode, or start from the first.
   function playTarget(s) {
     const eps = allEpisodes(s);
-    const seen = eps.map((e) => ({ e, at: parseFloat(storage.get(`vs-seen-${e.id}`)) || 0 })).filter((x) => x.at).sort((a, b) => b.at - a.at)[0];
+    const seen = eps.map((e) => ({ e, at: parseFloat(userStore.get(`vs-seen-${e.id}`)) || 0 })).filter((x) => x.at).sort((a, b) => b.at - a.at)[0];
     if (seen) {
       const pos = unfinished(seen.e);
       if (pos) return { ep: seen.e, pos, kind: 'resume', label: `Resume ${epLabel(seen.e)}` };
-      if (!storage.get(`vs-watched-${seen.e.id}`)) return { ep: seen.e, pos: 0, kind: 'again', label: `Play ${epLabel(seen.e)}` };
+      if (!userStore.get(`vs-watched-${seen.e.id}`)) return { ep: seen.e, pos: 0, kind: 'again', label: `Play ${epLabel(seen.e)}` };
       const next = eps[eps.findIndex((e) => e.id === seen.e.id) + 1];
       if (next) return { ep: next, pos: 0, kind: 'next', label: `Play ${epLabel(next)}` };
     }
@@ -82,27 +164,27 @@
     return Object.values(state.videos).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
   }
 
-  // Saved on this device only
-  const readList = () => { try { return JSON.parse(storage.get('vs-list') || '[]'); } catch { return []; } };
+  // Saved to the viewer's account
+  const readList = () => { try { return JSON.parse(userStore.get('vs-list') || '[]'); } catch { return []; } };
   const inList = (id) => readList().includes(id);
   function toggleList(id) {
     const list = readList();
     const i = list.indexOf(id);
     if (i >= 0) list.splice(i, 1); else list.unshift(id);
-    storage.set('vs-list', JSON.stringify(list));
+    userStore.set('vs-list', JSON.stringify(list));
     const v = id.startsWith('series:') ? state.series.find((x) => `series:${x.id}` === id) : state.videos[id];
     toast(i >= 0 ? 'Removed from My List' : `Added to My List${v ? `: ${titleOf(v)}` : ''}`, 'info', 2200);
   }
 
-  // Watch history, saved on this device only: [{ id, at }], newest first
-  const readHistory = () => { try { return JSON.parse(storage.get('vs-history') || '[]'); } catch { return []; } };
+  // Watch history, saved to the account: [{ id, at }], newest first
+  const readHistory = () => { try { return JSON.parse(userStore.get('vs-history') || '[]'); } catch { return []; } };
   function recordHistory(id) {
     const history = readHistory().filter((h) => h.id !== id);
     history.unshift({ id, at: Date.now() });
-    storage.set('vs-history', JSON.stringify(history.slice(0, 100)));
+    userStore.set('vs-history', JSON.stringify(history.slice(0, 100)));
   }
   function removeHistory(id) {
-    storage.set('vs-history', JSON.stringify(readHistory().filter((h) => h.id !== id)));
+    userStore.set('vs-history', JSON.stringify(readHistory().filter((h) => h.id !== id)));
   }
 
   // Things the viewer started but did not finish, most recently watched first. A series shows once:
@@ -111,11 +193,11 @@
     const entries = [];
     for (const v of library()) {
       const pos = unfinished(v);
-      if (pos) entries.push({ v, pos, seen: parseFloat(storage.get(`vs-seen-${v.id}`)) || 0 });
+      if (pos) entries.push({ v, pos, seen: parseFloat(userStore.get(`vs-seen-${v.id}`)) || 0 });
     }
     for (const series of state.series) {
       const t = playTarget(series);
-      const lastSeen = Math.max(0, ...allEpisodes(series).map((e) => parseFloat(storage.get(`vs-seen-${e.id}`)) || 0));
+      const lastSeen = Math.max(0, ...allEpisodes(series).map((e) => parseFloat(userStore.get(`vs-seen-${e.id}`)) || 0));
       if (!lastSeen) continue; // never started this series
       entries.push({ v: t.ep, pos: t.pos, seen: lastSeen, upNext: t.kind === 'next' });
     }
@@ -137,6 +219,7 @@
         fetch('/api/public/videos', { cache: 'no-cache' }),
         fetch('/api/public/series', { cache: 'no-cache' }).catch(() => null),
       ]);
+      if (moviesRes.status === 401) return showSignedOut();
       const json = await moviesRes.json();
       if (!json.success) throw new Error(json.error?.message || 'Could not load videos');
       const seriesJson = seriesRes ? await seriesRes.json().catch(() => null) : null;
@@ -200,6 +283,8 @@
     if (route.name !== 'search' && document.activeElement !== searchInput) searchInput.value = '';
     if (route.name === 'search' && document.activeElement !== searchInput) searchInput.value = route.q;
 
+    if (signedOut) return;
+    if (route.name === 'login' || route.name === 'signup') { location.hash = '#/'; return; }
     switch (route.name) {
       case 'watch': setNav(''); currentView = watchView(route.param); break;
       case 'search': setNav(''); currentView = gridView(`Results for “${route.q}”`, 'search', route.q); break;
@@ -313,7 +398,7 @@
   // One row of the episode list (series page and the watch page's season list)
   function episodeRowHtml(ep, current) {
     const pos = unfinished(ep);
-    const watched = !!storage.get(`vs-watched-${ep.id}`);
+    const watched = !!userStore.get(`vs-watched-${ep.id}`);
     const progress = pos ? `<span class="tile-prog"><i style="width:${Math.min(100, (pos / seconds(ep)) * 100).toFixed(1)}%"></i></span>` : '';
     return `
       <li><a class="ep ${current ? 'current' : ''}" href="${watchHref(ep)}" ${current ? 'aria-current="true"' : ''}>
@@ -342,7 +427,7 @@
 
   // A history card: progress bar for unfinished videos, plus a button to remove it
   function historyCardHtml(v) {
-    const pos = parseFloat(storage.get(`vs-pos-${v.id}`));
+    const pos = parseFloat(userStore.get(`vs-pos-${v.id}`));
     const heading = v.seriesId ? esc(v.seriesTitle || '') : esc(titleOf(v));
     const sub = v.seriesId ? `${esc(epLabel(v))} · ${esc(titleOf(v))}` : metaLine(v);
     const progress = pos > 5 && seconds(v) ? `<span class="tile-prog"><i style="width:${Math.min(100, (pos / seconds(v)) * 100).toFixed(1)}%"></i></span>` : '';
@@ -423,7 +508,7 @@
     else if (btn.dataset.act === 'info') openInfo(btn.dataset.id);
     else if (btn.dataset.act === 'remove-history') { removeHistory(btn.dataset.id); toast('Removed from history', 'info', 1800); render(); }
     else if (btn.dataset.act === 'clear-history') {
-      if (window.confirm('Clear your whole watch history on this device?')) { storage.del('vs-history'); render(); }
+      if (window.confirm('Clear your whole watch history?')) { userStore.del('vs-history'); render(); }
     }
     else if (btn.dataset.act === 'retry') { state.loaded = false; state.error = ''; render(); load(); }
   });
@@ -572,9 +657,9 @@
     }
 
     const empty = kind === 'mylist'
-      ? notice('plus', 'Your list is empty', 'Press + on any video or series to save it here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
+      ? notice('plus', 'Your list is empty', 'Press + on any video or series to save it here.', '<a class="btn btn-light" href="#/">Browse videos</a>')
       : kind === 'history'
-        ? notice('film', 'No watch history yet', 'Videos you watch will appear here. Saved on this device only.', '<a class="btn btn-light" href="#/">Browse videos</a>')
+        ? notice('film', 'No watch history yet', 'Videos you watch will appear here, on any device you sign in on.', '<a class="btn btn-light" href="#/">Browse videos</a>')
       : kind === 'series'
         ? notice('film', 'No series yet', 'Series will appear here as soon as they are published.', '<a class="btn btn-light" href="#/">Back to home</a>')
       : kind === 'anime'
@@ -787,15 +872,15 @@
       videoEl.addEventListener('playing', () => { if (!recorded) { recorded = true; recordHistory(video.id); } });
       let lastSaved = 0;
       videoEl.addEventListener('loadedmetadata', () => {
-        const pos = parseFloat(storage.get(posKey));
+        const pos = parseFloat(userStore.get(posKey));
         if (pos > 5 && pos < videoEl.duration - 5) { videoEl.currentTime = pos; toast(`Resumed from ${formatDuration(pos)}`, 'info', 2500); }
         applySubtitles(savedSubIndex());
       }, { once: true });
       videoEl.addEventListener('timeupdate', () => {
         if (Date.now() - lastSaved > 2000) {
           lastSaved = Date.now();
-          storage.set(posKey, videoEl.currentTime);
-          storage.set(`vs-seen-${video.id}`, Date.now());
+          userStore.set(posKey, videoEl.currentTime);
+          userStore.set(`vs-seen-${video.id}`, Date.now());
         }
       });
 
@@ -826,8 +911,8 @@
       const nextBox = $('#next-up');
       function stopCountdown() { clearInterval(countdown); countdown = null; nextBox.classList.remove('visible'); }
       videoEl.addEventListener('ended', () => {
-        storage.del(posKey);
-        storage.set(`vs-watched-${video.id}`, '1'); // lets a series offer the next episode
+        userStore.del(posKey);
+        userStore.set(`vs-watched-${video.id}`, '1'); // lets a series offer the next episode
         const next = nextVideo();
         if (!auto.checked || !next) return;
         let left = 5;
@@ -980,8 +1065,104 @@
     };
   }
 
+  // ─── Sign in / sign up ──────────────────────────────────────
+  let signedOut = false;
+  function showSignedOut() {
+    if (signedOut) return;
+    signedOut = true;
+    if (currentView && currentView.teardown) currentView.teardown();
+    currentView = null;
+    document.body.classList.add('signed-out');
+    renderAuth(location.hash === '#/signup' ? 'signup' : 'login');
+  }
+
+  function renderAuth(mode) {
+    const signup = mode === 'signup';
+    document.title = `${signup ? 'Create your account' : 'Sign in'} — VideoStream`;
+    app.innerHTML = `
+      <div class="auth-page">
+        <form class="auth-card" id="auth-form" novalidate>
+          <h1>${signup ? 'Create your account' : 'Sign in'}</h1>
+          <p class="auth-sub">${signup ? 'Watch everything on VideoStream. Your list and progress follow you to any device.' : 'Welcome back. Sign in to keep watching.'}</p>
+          ${signup ? '<label class="auth-field"><span>Name</span><input class="auth-input" name="name" autocomplete="name" maxlength="60" required /></label>' : ''}
+          <label class="auth-field"><span>Email</span><input class="auth-input" name="email" type="email" autocomplete="email" required /></label>
+          <label class="auth-field"><span>Password</span><input class="auth-input" name="password" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" minlength="8" required />
+            ${signup ? '<small>At least 8 characters.</small>' : ''}</label>
+          <p class="auth-error" id="auth-error" role="alert" hidden></p>
+          <button class="btn btn-red btn-lg auth-submit" type="submit">${signup ? 'Create account' : 'Sign in'}</button>
+          <p class="auth-switch">${signup ? 'Already have an account? <a href="#/login" data-auth="login">Sign in</a>' : 'New to VideoStream? <a href="#/signup" data-auth="signup">Create an account</a>'}</p>
+        </form>
+      </div>`;
+    const form = app.querySelector('#auth-form');
+    const errBox = app.querySelector('#auth-error');
+    (form.name || form.email).focus();
+    app.querySelector('[data-auth]').addEventListener('click', (e) => { e.preventDefault(); renderAuth(signup ? 'login' : 'signup'); });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const button = form.querySelector('.auth-submit');
+      const body = { email: form.email.value, password: form.password.value, ...(signup ? { name: form.name.value } : {}) };
+      button.disabled = true;
+      errBox.hidden = true;
+      try {
+        const res = await fetch(`/api/auth/${signup ? 'signup' : 'login'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const json = await res.json().catch(() => null);
+        if (!json || !json.success) throw new Error((json && json.error && json.error.message) || 'Something went wrong. Try again.');
+        location.hash = '#/';
+        location.reload(); // start the app fresh as the signed-in viewer
+      } catch (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        button.disabled = false;
+      }
+    });
+  }
+
+  function renderAccountMenu() {
+    const slot = document.getElementById('auth-slot');
+    if (!slot || !account.user) return;
+    const initial = (account.user.name || account.user.email).trim().charAt(0).toUpperCase();
+    slot.innerHTML = `
+      <div class="acct">
+        <button class="avatar" id="acct-btn" aria-haspopup="true" aria-expanded="false" aria-label="Account: ${esc(account.user.name)}">${esc(initial)}</button>
+        <div class="acct-menu" id="acct-menu" hidden>
+          <p class="acct-name">${esc(account.user.name)}</p>
+          <p class="acct-email">${esc(account.user.email)}</p>
+          <a href="#/mylist">My List</a>
+          <a href="#/history">Watch history</a>
+          <button id="logout-btn">Sign out</button>
+        </div>
+      </div>`;
+    const btn = slot.querySelector('#acct-btn');
+    const menu = slot.querySelector('#acct-menu');
+    const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+    btn.addEventListener('click', (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); });
+    menu.addEventListener('click', (e) => { if (e.target.closest('a')) close(); });
+    document.addEventListener('click', (e) => { if (!e.target.closest('.acct')) close(); });
+    slot.querySelector('#logout-btn').addEventListener('click', async () => {
+      flushProgress();
+      await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+      location.hash = '#/';
+      location.reload();
+    });
+  }
+
   // ─── Boot ──────────────────────────────────────────────────
-  render();
-  load();
-  startPolling();
+  async function boot() {
+    try {
+      const me = await fetch('/api/auth/me', { cache: 'no-store' });
+      if (me.status === 401) return showSignedOut();
+      const meJson = await me.json();
+      if (!meJson.success) throw new Error(meJson.error?.message || 'Could not check your sign-in');
+      account.user = meJson.data;
+      const data = await (await fetch('/api/me', { cache: 'no-store' })).json();
+      if (data.success) { account.list = data.data.list || []; account.progress = data.data.progress || {}; }
+    } catch {
+      // Server unreachable: the normal error page shows once loading fails
+    }
+    renderAccountMenu();
+    render();
+    load();
+    startPolling();
+  }
+  boot();
 })();
