@@ -7,6 +7,7 @@ export interface UserProfile {
   email: string;          // normalised (lower case); also the account's key
   name: string;
   passwordHash: string;   // never leaves the server
+  googleSub?: string;     // set for accounts created with Google sign-in
   createdAt: string;
 }
 
@@ -51,7 +52,7 @@ class JsonUserStore implements UserStore {
   async getUser(email: string) {
     const u = (await this.store.read()).find((x) => x.email === email);
     if (!u) return null;
-    return { email: u.email, name: u.name, passwordHash: u.passwordHash, createdAt: u.createdAt };
+    return { email: u.email, name: u.name, passwordHash: u.passwordHash, googleSub: u.googleSub, createdAt: u.createdAt };
   }
 
   async createUser(user: UserProfile) {
@@ -105,8 +106,8 @@ class DynamoUserStore implements UserStore {
   async getUser(email: string) {
     const r = await this.doc.send(new GetCommand({ TableName: this.table, Key: { pk: this.pk(email), sk: 'PROFILE' }, ConsistentRead: true }));
     if (!r.Item) return null;
-    const { email: e, name, passwordHash, createdAt } = r.Item;
-    return { email: e, name, passwordHash, createdAt };
+    const { email: e, name, passwordHash, googleSub, createdAt } = r.Item;
+    return { email: e, name, passwordHash, googleSub, createdAt };
   }
 
   async createUser(user: UserProfile) {

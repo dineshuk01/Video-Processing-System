@@ -4,6 +4,7 @@ import { getUserStore } from '../services/users/userStore';
 import { clearSessionCookie, hashPassword, requireUser, setSessionCookie, verifyPassword } from '../middleware/userAuth';
 import { HttpError, ResponseHandler } from '../utils/responseHandler';
 import { Logger } from '../utils/logger';
+import { googleClientId, passwordLoginEnabled, verifyGoogleIdToken } from '../services/users/googleAuth';
 
 // ─── /api/auth: sign up, log in, log out, who am I ──────────
 export const authRouter = Router();
@@ -34,8 +35,40 @@ function parseName(value: unknown): string {
   return name;
 }
 
+// What the sign-in page should offer (the website reads this; no secrets in it)
+authRouter.get('/config', (req: Request, res: Response) => {
+  return ResponseHandler.success(res, { googleClientId: googleClientId() || null, passwordLogin: passwordLoginEnabled() });
+});
+
+// Sign in with Google: one step for new and returning viewers. The account is keyed by the verified
+// email, so someone who signed up with a password earlier gets into the same account.
+authRouter.post('/google', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const google = await verifyGoogleIdToken(req.body?.credential);
+    const store = getUserStore();
+    let user = await store.getUser(google.email);
+    if (!user) {
+      const profile = { email: google.email, name: google.name, passwordHash: '', googleSub: google.sub, createdAt: new Date().toISOString() };
+      try {
+        await store.createUser(profile);
+        Logger.info('New viewer account created (Google)');
+      } catch (err: any) {
+        if (err.code !== 'EMAIL_TAKEN') throw err; // created a moment ago by a parallel request: fine
+      }
+      user = (await store.getUser(google.email)) || profile;
+    }
+    setSessionCookie(req, res, google.email);
+    return ResponseHandler.success(res, { name: user.name, email: user.email });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const passwordOff = () => new HttpError('Sign in with Google instead', 403, 'PASSWORD_LOGIN_DISABLED');
+
 authRouter.post('/signup', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!passwordLoginEnabled()) throw passwordOff();
     const name = parseName(req.body?.name);
     const email = parseEmail(req.body?.email);
     const password = parsePassword(req.body?.password);
@@ -50,6 +83,7 @@ authRouter.post('/signup', authLimiter, async (req: Request, res: Response, next
 
 authRouter.post('/login', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!passwordLoginEnabled()) throw passwordOff();
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     const user = email ? await getUserStore().getUser(email) : null;

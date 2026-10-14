@@ -72,7 +72,9 @@ The user site needs an account: visitors see a sign-in page and can create an ac
 - **Protection**: wrong email and wrong password give the same answer; sign-up and sign-in are limited to 20 attempts per 15 minutes per address.
 - On AWS the video files themselves are served by CloudFront and are not yet tied to the session: the catalogue and stream addresses need a login, but a stream address that is passed on keeps working. Signed CloudFront cookies would close this; they need the site on its own domain.
 
-API: `POST /api/auth/signup` `{ name, email, password }`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`; `GET /api/me`, `PUT /api/me/list` `{ items }`, `PUT /api/me/progress/:videoId` `{ pos, seen, watched }`, `DELETE /api/me/progress[/:videoId]`.
+**Sign in with Google.** With `GOOGLE_CLIENT_ID` set, the sign-in page shows only "Continue with Google", and email/password sign-up and sign-in are refused (set `ALLOW_PASSWORD_LOGIN=true` to keep both). Google proves the person owns the address, so made-up emails cannot get in. The server checks Google's signature on the ID token, that it was issued for this client ID, has not expired, and that Google verified the email. The account is keyed by that email, so a viewer who signed up with a password earlier lands in the same account. `GET /api/auth/config` tells the page which methods are on.
+
+API: `POST /api/auth/signup` `{ name, email, password }`, `POST /api/auth/google` `{ credential }`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`; `GET /api/me`, `PUT /api/me/list` `{ items }`, `PUT /api/me/progress/:videoId` `{ pos, seen, watched }`, `DELETE /api/me/progress[/:videoId]`.
 
 ## Admin sign-in
 

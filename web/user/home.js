@@ -316,7 +316,7 @@
 
   // ─── Shared markup ─────────────────────────────────────────
   const thumbHtml = (v) => (v.thumbnailUrl
-    ? `<img src="${esc(v.thumbnailUrl)}" alt="" loading="lazy" />`
+    ? `<img crossorigin="anonymous" src="${esc(v.thumbnailUrl)}" alt="" loading="lazy" />`
     : `<span class="thumb-empty">${svg('film', 28)}</span>`);
 
   const metaLine = (v) => [height(v) >= 720 ? '<span class="hdtag">HD</span>' : '', seconds(v) ? esc(formatDuration(seconds(v))) : '', esc(timeAgo(v.publishedAt))]
@@ -477,7 +477,7 @@
       title: titleOf(v),
       wide: true,
       html: `
-        <div class="info-hero">${v.thumbnailUrl ? `<img src="${esc(v.thumbnailUrl)}" alt="" />` : ''}<div class="info-shade"></div>
+        <div class="info-hero">${v.thumbnailUrl ? `<img crossorigin="anonymous" src="${esc(v.thumbnailUrl)}" alt="" />` : ''}<div class="info-shade"></div>
           <div class="info-hero-body"><h2>${esc(titleOf(v))}</h2>
             <div class="info-actions"><a class="btn btn-light" href="${watchHref(v)}" data-close>${svg('play', 16)} Play</a>
               <button class="round" data-act="list" data-id="${esc(v.id)}" aria-pressed="${inList(v.id)}" aria-label="Toggle My List">${svg(inList(v.id) ? 'check' : 'plus', 16)}</button></div></div></div>
@@ -575,7 +575,7 @@
         const t = playTarget(item);
         return `
         <section class="billboard slide${i === 0 ? ' on' : ''}" aria-label="Featured series">
-          ${item.posterUrl ? `<img class="bb-img" src="${esc(item.posterUrl)}" alt="" />` : ''}
+          ${item.posterUrl ? `<img class="bb-img" crossorigin="anonymous" src="${esc(item.posterUrl)}" alt="" />` : ''}
           <div class="bb-shade"></div>
           <div class="bb-body">
             <p class="bb-info"><span class="chip">Series</span><span>${esc(seriesLine(item))}</span></p>
@@ -590,7 +590,7 @@
       }
       return `
         <section class="billboard slide${i === 0 ? ' on' : ''}" aria-label="Featured video">
-          ${item.thumbnailUrl ? `<img class="bb-img" src="${esc(item.thumbnailUrl)}" alt="" />` : ''}
+          ${item.thumbnailUrl ? `<img class="bb-img" crossorigin="anonymous" src="${esc(item.thumbnailUrl)}" alt="" />` : ''}
           <div class="bb-shade"></div>
           <div class="bb-body">
             <p class="bb-info"><span class="chip">${ageMs(item) < 864e5 ? 'New' : 'Movie'}</span><span>${metaLine(item)}</span></p>
@@ -700,7 +700,7 @@
 
     app.innerHTML = `
       <section class="billboard series-hero" aria-label="${esc(series.title)}">
-        ${series.posterUrl ? `<img class="bb-img" src="${esc(series.posterUrl)}" alt="" />` : ''}
+        ${series.posterUrl ? `<img class="bb-img" crossorigin="anonymous" src="${esc(series.posterUrl)}" alt="" />` : ''}
         <div class="bb-shade"></div>
         <div class="bb-body">
           <span class="bb-tag">Series</span>
@@ -940,7 +940,7 @@
         const lang = storage.get('vs-audio');
         const wanted = lang ? found.findIndex((t, i) => ((video.audioTracks && video.audioTracks[i] && video.audioTracks[i].language) || t.lang) === lang) : -1;
         if (wanted >= 0 && wanted !== hls.audioTrack) hls.audioTrack = wanted;
-        audioSel.value = String(hls.audioTrack);
+        audioSel.value = String(Math.max(0, hls.audioTrack));
       }
       if (audioSel) audioSel.addEventListener('change', () => {
         if (!hls) return;
@@ -969,7 +969,7 @@
             if (resumeAt) videoEl.currentTime = resumeAt;
             videoEl.play().catch(() => { /* autoplay blocked: the viewer presses play */ });
           });
-          hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio);
+          hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio); hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, d) => { if (audioSel) audioSel.value = String(d.id); });
           hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
             const level = hls.levels[data.level];
             if (level && qualitySel.value === '-1') qualitySel.options[0].textContent = `Auto (${level.height}p)`;
@@ -1073,29 +1073,80 @@
     if (currentView && currentView.teardown) currentView.teardown();
     currentView = null;
     document.body.classList.add('signed-out');
-    renderAuth(location.hash === '#/signup' ? 'signup' : 'login');
+    const mode = location.hash === '#/signup' ? 'signup' : 'login';
+    fetch('/api/auth/config', { cache: 'no-store' })
+      .then((res) => res.json())
+      .then((json) => (json && json.success ? json.data : { passwordLogin: true }))
+      .catch(() => ({ passwordLogin: true }))
+      .then((config) => { authConfig = config; renderAuth(mode); });
+  }
+
+  // ─── Sign in with Google ──────────────────────────────────
+  let authConfig = { passwordLogin: true, googleClientId: null };
+  let googleScript = null;
+  function loadGoogle() {
+    googleScript = googleScript || new Promise((resolve, reject) => {
+      const tag = document.createElement('script');
+      tag.src = 'https://accounts.google.com/gsi/client';
+      tag.async = true;
+      tag.onload = resolve;
+      tag.onerror = () => reject(new Error('Could not reach Google. Check your connection and try again.'));
+      document.head.appendChild(tag);
+    });
+    return googleScript;
+  }
+  async function signInWithGoogle(response) {
+    const errBox = app.querySelector('#auth-error');
+    try {
+      const res = await fetch('/api/auth/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: response.credential }) });
+      const json = await res.json().catch(() => null);
+      if (!json || !json.success) throw new Error((json && json.error && json.error.message) || 'Google sign-in failed. Try again.');
+      location.hash = '#/';
+      location.reload(); // start the app fresh as the signed-in viewer
+    } catch (err) {
+      if (errBox) { errBox.textContent = err.message; errBox.hidden = false; }
+    }
+  }
+  function showGoogleButton() {
+    const slot = app.querySelector('#google-btn');
+    if (!slot || !authConfig.googleClientId) return;
+    loadGoogle().then(() => {
+      window.google.accounts.id.initialize({ client_id: authConfig.googleClientId, callback: signInWithGoogle, ux_mode: 'popup' });
+      window.google.accounts.id.renderButton(slot, { theme: 'filled_black', size: 'large', shape: 'pill', text: 'continue_with', width: Math.min(356, slot.clientWidth || 356) });
+    }).catch((err) => {
+      const errBox = app.querySelector('#auth-error');
+      if (errBox) { errBox.textContent = err.message; errBox.hidden = false; }
+    });
   }
 
   function renderAuth(mode) {
-    const signup = mode === 'signup';
+    const google = !!authConfig.googleClientId;
+    const passwords = authConfig.passwordLogin !== false;
+    const signup = mode === 'signup' && passwords;
     document.title = `${signup ? 'Create your account' : 'Sign in'} — VideoStream`;
-    app.innerHTML = `
-      <div class="auth-page">
-        <form class="auth-card" id="auth-form" novalidate>
-          <h1>${signup ? 'Create your account' : 'Sign in'}</h1>
-          <p class="auth-sub">${signup ? 'Watch everything on VideoStream. Your list and progress follow you to any device.' : 'Welcome back. Sign in to keep watching.'}</p>
+    const passwordForm = !passwords ? '' : `
           ${signup ? '<label class="auth-field"><span>Name</span><input class="auth-input" name="name" autocomplete="name" maxlength="60" required /></label>' : ''}
           <label class="auth-field"><span>Email</span><input class="auth-input" name="email" type="email" autocomplete="email" required /></label>
           <label class="auth-field"><span>Password</span><input class="auth-input" name="password" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" minlength="8" required />
             ${signup ? '<small>At least 8 characters.</small>' : ''}</label>
-          <p class="auth-error" id="auth-error" role="alert" hidden></p>
           <button class="btn btn-red btn-lg auth-submit" type="submit">${signup ? 'Create account' : 'Sign in'}</button>
-          <p class="auth-switch">${signup ? 'Already have an account? <a href="#/login" data-auth="login">Sign in</a>' : 'New to VideoStream? <a href="#/signup" data-auth="signup">Create an account</a>'}</p>
+          <p class="auth-switch">${signup ? 'Already have an account? <a href="#/login" data-auth="login">Sign in</a>' : 'New to VideoStream? <a href="#/signup" data-auth="signup">Create an account</a>'}</p>`;
+    app.innerHTML = `
+      <div class="auth-page">
+        <form class="auth-card" id="auth-form" novalidate>
+          <h1>${signup ? 'Create your account' : 'Sign in'}</h1>
+          <p class="auth-sub">${google && !passwords ? 'Use your Google account to sign in, or to create your account the first time. Your list and progress follow you to any device.' : signup ? 'Watch everything on VideoStream. Your list and progress follow you to any device.' : 'Welcome back. Sign in to keep watching.'}</p>
+          ${google ? '<div class="google-btn" id="google-btn"></div>' : ''}
+          ${google && passwords ? '<p class="auth-or"><span>or</span></p>' : ''}
+          <p class="auth-error" id="auth-error" role="alert" hidden></p>
+          ${passwordForm}
         </form>
       </div>`;
+    showGoogleButton();
+    if (!passwords) return; // Google only: no email form
     const form = app.querySelector('#auth-form');
     const errBox = app.querySelector('#auth-error');
-    (form.name || form.email).focus();
+    if (!google) (form.name || form.email).focus();
     app.querySelector('[data-auth]').addEventListener('click', (e) => { e.preventDefault(); renderAuth(signup ? 'login' : 'signup'); });
     form.addEventListener('submit', async (e) => {
       e.preventDefault();

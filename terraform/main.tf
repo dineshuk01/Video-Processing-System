@@ -472,6 +472,7 @@ locals {
     "DYNAMODB_TABLE_NAME=${aws_dynamodb_table.videos.name}",
     "USERS_TABLE_NAME=${aws_dynamodb_table.users.name}",
     "USER_SESSION_SECRET=${var.user_session_secret}",
+    "TRUST_PROXY_HOPS=2", # viewer -> CloudFront -> Caddy -> app: rate limits per visitor
     "ECS_CLUSTER_NAME=${aws_ecs_cluster.main.name}",
     "ECS_TASK_DEFINITION=${var.project_name}-${var.environment}-transcoder",
     "ECS_CONTAINER_NAME=transcoder",

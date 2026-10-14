@@ -1227,7 +1227,7 @@
       $('#audio-wrap').hidden = found.length < 2;
       if (found.length < 2) return;
       audioSel.innerHTML = found.map((t, i) => `<option value="${i}">${esc((video.audioTracks && video.audioTracks[i] && video.audioTracks[i].label) || t.name || `Audio ${i + 1}`)}</option>`).join('');
-      audioSel.value = String(hls.audioTrack);
+      audioSel.value = String(Math.max(0, hls.audioTrack));
     }
     if (audioSel) audioSel.addEventListener('change', () => { if (hls) hls.audioTrack = parseInt(audioSel.value, 10); });
 
@@ -1246,7 +1246,7 @@
           if (activeTab === 'transcode') renderTab();
           if (resumeAt) videoEl.currentTime = resumeAt;
         });
-        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio);
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio); hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, d) => { if (audioSel) audioSel.value = String(d.id); });
         hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
           const level = hls.levels[data.level];
           autoLevel = level ? level.height : null;

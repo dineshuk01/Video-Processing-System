@@ -53,7 +53,10 @@ export function sessionEmail(req: Request): string | null {
   }
 }
 
-const isHttps = (req: Request) => req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+// CloudFront talks to the server over plain HTTP but says how the visitor connected
+const isHttps = (req: Request) => req.secure
+  || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https'
+  || req.headers['cloudfront-forwarded-proto'] === 'https';
 
 export function setSessionCookie(req: Request, res: Response, email: string) {
   res.setHeader('Set-Cookie',
