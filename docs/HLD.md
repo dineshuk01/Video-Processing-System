@@ -13,13 +13,14 @@ This document explains what the project is, how it is built, and what happens in
 - [9. Data model](#9-data-model)
 - [10. Series, seasons and sections](#10-series-seasons-and-sections)
 - [11. Audio languages and subtitles](#11-audio-languages-and-subtitles)
-- [12. Security](#12-security)
-- [13. Failure handling](#13-failure-handling)
-- [14. AWS deployment](#14-aws-deployment)
-- [15. Code map](#15-code-map)
-- [16. API overview](#16-api-overview)
-- [17. Configuration](#17-configuration)
-- [18. Known limits](#18-known-limits)
+- [12. Viewer accounts](#12-viewer-accounts)
+- [13. Security](#13-security)
+- [14. Failure handling](#14-failure-handling)
+- [15. AWS deployment](#15-aws-deployment)
+- [16. Code map](#16-code-map)
+- [17. API overview](#17-api-overview)
+- [18. Configuration](#18-configuration)
+- [19. Known limits](#19-known-limits)
 
 ---
 
@@ -294,10 +295,43 @@ Video updates change only the fields given, so the encoder writing progress and 
 
 Uploaded subtitles are stored under `subtitles/<videoId>/`, apart from the processed files, so reprocessing a video does not erase them.
 
-## 12. Security
+## 12. Viewer accounts
+
+Everything on the viewer website needs an account: the catalogue, the posters and (locally) the video files.
+
+```mermaid
+sequenceDiagram
+    participant V as Viewer
+    participant W as Website
+    participant API as User API
+    participant U as Accounts store
+    V->>W: open the site
+    W->>API: GET /api/auth/me
+    API-->>W: 401, not signed in
+    W-->>V: sign-in page
+    V->>API: POST /api/auth/signup or /login (or /google)
+    API->>U: create or check the account
+    API-->>V: signed session cookie (30 days)
+    W->>API: GET /api/me (My List, progress) and /api/public/* (catalogue)
+```
+
+| Part | How |
+|---|---|
+| Sign-up and sign-in | Name, email and password; or "Sign in with Google" when `GOOGLE_CLIENT_ID` is set (passwords then turn off) |
+| Passwords | Stored only as salted scrypt hashes |
+| Session | A signed, HttpOnly cookie (`USER_SESSION_SECRET`) with no server-side session store; Secure when the visitor uses HTTPS |
+| Google sign-in | The server checks Google's signature on the ID token, the audience, the expiry, and that the email is verified |
+| Per-person data | My List and, per video, the position, last-watched time and "finished". This drives Continue Watching, resume and the history |
+| Storage | `users.json` locally; on AWS a DynamoDB table of its own: key `USER#<email>`, items `PROFILE`, `LIST`, `PROGRESS#<videoId>` |
+| Abuse | Sign-up and sign-in are limited to 20 attempts per 15 minutes per visitor; a wrong email and a wrong password get the same answer |
+
+The website saves the playing position at most every 10 seconds, and when the tab is hidden or closed. Playback speed and the chosen audio and subtitle language stay in the browser.
+
+## 13. Security
 
 | Risk | Protection |
 |---|---|
+| Strangers watching | The catalogue, My List, progress and (locally) the media need a signed-in viewer account. |
 | Strangers using admin functions | Every `/api/admin` route needs the admin password. The session is a signed, HttpOnly cookie; scripts can send an `x-admin-key` header. |
 | Admin routes exposed on the public server | With `APP_MODE=user` they are not mounted at all. |
 | Viewers reading unpublished or raw files | The public API returns published, finished videos only. Locally, the media route serves the public only the files of visible videos; raw uploads are admin-only. On AWS the raw bucket is private and the public bucket is readable only through CloudFront. |
@@ -306,7 +340,7 @@ Uploaded subtitles are stored under `subtitles/<videoId>/`, apart from the proce
 | Path tricks | The local media route rejects paths that leave the storage folder. |
 | Abuse of the public API | A rate limit (600 requests per 15 minutes per address). |
 
-## 13. Failure handling
+## 14. Failure handling
 
 | What goes wrong | What the system does |
 |---|---|
@@ -317,7 +351,7 @@ Uploaded subtitles are stored under `subtitles/<videoId>/`, apart from the proce
 | A video is reprocessed | Files are rewritten under the same names. The local media route tells browsers to re-check files, so an old copy is not replayed. |
 | An upload is abandoned | A cleanup task removes raw uploads that were never processed after 24 hours (it runs every 6 hours). On AWS the raw bucket also deletes originals after 7 days. |
 
-## 14. AWS deployment
+## 15. AWS deployment
 
 ```mermaid
 flowchart TB
@@ -357,7 +391,7 @@ flowchart TB
 
 Cost shape: a small fixed part (the server) plus encoding time, storage, and data delivered to viewers. Delivery dominates once there are many viewers.
 
-## 15. Code map
+## 16. Code map
 
 ```
 src/
@@ -385,7 +419,7 @@ src/
     cdn/, cleanup/, metrics/
   utils/                   file lock, JSON file store, languages, logger, response helpers
 web/
-  user/                    the public site (one page, hash routes)
+  user/                    the viewer website (one page, hash routes); also kept in its own repo, videostream-web
   admin/                   the dashboard (app, upload, views, series)
   shared/common.js         helpers both sites use
 terraform/                 the AWS infrastructure
@@ -395,7 +429,7 @@ docs/                      this file, ADMIN_AND_USER_APPS.md, DEPLOY_AWS.md
 
 The front-ends are plain HTML, CSS and JavaScript with no build step.
 
-## 16. API overview
+## 17. API overview
 
 **Public** (`/api/public`)
 
@@ -422,7 +456,7 @@ The front-ends are plain HTML, CSS and JavaScript with no build step.
 
 Every response has the same shape: `{ "success": true, "data": ... }` or `{ "success": false, "error": { "message", "code" } }`.
 
-## 17. Configuration
+## 18. Configuration
 
 | Setting | Purpose |
 |---|---|
@@ -441,9 +475,8 @@ Every response has the same shape: `{ "success": true, "data": ... }` or `{ "suc
 
 See `.env.example` for the full list with comments.
 
-## 18. Known limits
+## 19. Known limits
 
-- **No viewer accounts.** The public site is open; "My List" and watch history are kept in the viewer's browser only.
 - **One admin password**, not per-person accounts or roles.
 - **Sizes stop at 1080p.** A 4K upload is delivered at 1080p at most.
 - **Reprocessing on AWS** rewrites files under the same names, so CloudFront can serve the old ones until its cache expires.
